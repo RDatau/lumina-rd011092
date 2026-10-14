@@ -1876,6 +1876,78 @@ Instructions:
   };
 };
 
+/**
+ * Memanfaatkan Kecerdasan Buatan (LLM Gemini) untuk mengaudit dan menyempurnakan prompt gambar
+ * sebelum dikirim ke Hugging Face atau image generator:
+ * - Menghilangkan penulisan discarded yang ganda/berulang.
+ * - Memangkas kontradiksi aksi (misal: pakaian masih dalam aksi pelepasan tapi sudah ada discarded di lantai/tempat tidur).
+ * - Menjaga satu prompt discarded yang melampirkan lengkap dengan jumlah satuan (... piece).
+ */
+export const refinePromptWithAI = async (
+  prompt: string,
+  userProfile?: UserProfile
+): Promise<string> => {
+  if (!prompt || prompt.length < 20) return prompt;
+
+  const hasDiscardedOrUndress = /\b(?:discarded|stepping out|taking off|removing|dropping|undress|bottomless|topless|piece\))\b/i.test(prompt);
+  if (!hasDiscardedOrUndress) {
+    return prompt;
+  }
+
+  try {
+    const ai = createGeminiClient(userProfile);
+    const textModel = getActiveTextModel(userProfile);
+
+    const auditInstruction = `You are an elite AI Image Prompt Engineer and Prompt Auditor.
+Analyze and refine this image generation prompt to eliminate redundancies, contradictions, and duplication regarding clothing, undress actions, and discarded garments:
+
+CRITICAL INSTRUCTIONS:
+1. STRICTLY ELIMINATE DUPLICATE DISCARDED GARMENTS:
+   - If discarded garments are mentioned more than once anywhere in the prompt, KEEP ONLY ONE clean description.
+   - ALWAYS choose and preserve the single discarded description that includes the complete quantity in parentheses, e.g. "(1 piece)" or "(... pieces)".
+   - REMOVE any other duplicate, vague, or second mentions of discarded/dropped clothes in the scene/pose text.
+2. RESOLVE CONFLICTS BETWEEN ACTIVE REMOVAL ACTIONS AND DISCARDED PROPS:
+   - If the character is described as still in the middle of an action of removing, shedding, stepping out of, pulling down, or taking off a garment (e.g. "stepping out of sweatpants onto the floor", "captured mid-action taking off pants") while that same garment is already stated as discarded/neatly placed on the floor/bed:
+     * ELIMINATE the active removal action from the character's pose.
+     * Keep the character's body pose natural and focused on their posture, facial expression, and remaining clothes or bare skin.
+     * Retain the stationary discarded garment with its "(... piece)" count.
+3. PRESERVE ALL ORIGINAL DIRECTIVES:
+   - Faithfully retain all character names, facial biometric reference locks (e.g. Image 1 locks), strictly solo / couple rules, camera framing, lighting, room environment, and photographic quality tags.
+4. OUTPUT FORMAT:
+   - Return ONLY the final polished English prompt string.
+   - Do NOT include markdown code blocks, quotes, apologies, or conversational explanations.`;
+
+    const response = await ai.models.generateContent({
+      model: textModel,
+      contents: [{
+        parts: [{
+          text: `${auditInstruction}\n\nORIGINAL PROMPT TO REFINE:\n"""\n${prompt}\n"""`
+        }]
+      }],
+      config: {
+        temperature: 0.1,
+        maxOutputTokens: 2500,
+        safetySettings: safetySettings as any,
+      }
+    });
+
+    const refined = response.text?.trim()
+      .replace(/^```(?:markdown|text)?\n?/i, '')
+      .replace(/\n?```$/i, '')
+      .replace(/^["']|["']$/g, '')
+      .trim();
+
+    if (refined && refined.length > 30) {
+      console.log("[Prompt Refiner AI] Successfully audited and pruned double discarded / action conflicts with AI.");
+      return refined;
+    }
+  } catch (err) {
+    console.warn("[Prompt Refiner AI] AI refinement fallback:", err);
+  }
+
+  return prompt;
+};
+
 export const generatePAP = async (
   fullResponse: string, 
   config: AgentConfig, 
@@ -2326,31 +2398,44 @@ export const generatePAP = async (
   };
   const isHandledInitially = isGarmentInHandOrSetAside(englishCaption || '') || isGarmentInHandOrSetAside(rawCaption);
 
+  const cleanDiscardedMentions = (text: string): string => {
+    if (!text) return "";
+    let t = text;
+    t = t.replace(/(?:stepping\s+out\s+of|taking\s+off|removing|dropping|slipping\s+out\s+of|shedding)\s+(?:her\s+|his\s+|the\s+)?(?:sweatpants|pants|trousers|shorts|jeans|skirt|dress|clothing|clothes|garments?)\b[^.,]*/gi, '');
+    t = t.replace(/(?:with|,?\s*and|,?\s*at the same time|,?\s*having)\s+(?:sweatpants|pants|trousers|shorts|jeans|skirt|dress|shirt|top|bra|lingerie|underwear|clothes|clothing|garments?)\s+(?:discarded|dropped|removed|tossed|thrown|placed|left)\b[^.,]*/gi, '');
+    t = t.replace(/(?:sweatpants|pants|trousers|shorts|jeans|skirt|dress|shirt|top|bra|lingerie|underwear|clothes|clothing|garments?)\s+(?:discarded|dropped|removed|tossed|thrown|placed|left)\s+(?:on\s+the\s+)?(?:floor|bed|ground|room)\b[^.,]*/gi, '');
+    t = t.replace(/(?:dengan|sambil)\s+(?:celana|baju|pakaian|rok|daster|celana\s+panjang|celana\s+pendek)\s+(?:dibuang|dilepas|dicopot|diletakkan|tergeletak)\b[^.,]*/gi, '');
+    t = t.replace(/\b(?:discarded|dropped|removed)\s+(?:on\s+the\s+)?(?:floor|bed|ground)\b/gi, '');
+    t = t.replace(/\s{2,}/g, ' ').replace(/\s+([.,;:])/g, '$1').trim();
+    return t;
+  };
+  const cleanCaptionForUndress = isEffectiveUndress ? cleanDiscardedMentions(englishCaption) : englishCaption;
+
   let UNDRESS_PROMPT = "";
   if (isBottomOnlyUndress) {
     if (isDress) {
       const dressRemovalClause = isHandledInitially
         ? `${agentPossessive} removed 1-piece dress (${dressGarment}) is held in ${agentPossessive} hand`
         : `${agentPossessive} discarded ${dressGarment} (1 piece) is neatly placed ${placementSpot}`;
-      UNDRESS_PROMPT = `PARTIAL UNDRESS (BOTTOM REMOVED): Character 1 has pulled up or removed ${agentPossessive} 1-piece dress (${dressGarment}). ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} hips and legs are natural bare skin. ${dressRemovalClause}. Scene details: ${englishCaption}`;
+      UNDRESS_PROMPT = `PARTIAL UNDRESS (BOTTOM REMOVED): Character 1 has pulled up or removed ${agentPossessive} 1-piece dress (${dressGarment}). ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} hips and legs are natural bare skin. ${dressRemovalClause}. Scene details: ${cleanCaptionForUndress}`;
     } else {
       const discardedBottomClause = isHandledInitially
         ? `${agentPossessive} removed ${bottomGarment} (1 piece) is held in ${agentPossessive} hand`
         : `${agentPossessive} discarded ${bottomGarment} (1 piece) is neatly placed ${placementSpot}`;
-      UNDRESS_PROMPT = `PARTIAL UNDRESS (BOTTOMLESS ONLY): Character 1 is wearing ${agentPossessive} top (${topGarment}) on ${agentPossessive} upper body. ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} hips and legs are natural bare skin. ${discardedBottomClause}. Scene details: ${englishCaption}`;
+      UNDRESS_PROMPT = `PARTIAL UNDRESS (BOTTOMLESS ONLY): Character 1 is wearing ${agentPossessive} top (${topGarment}) on ${agentPossessive} upper body. ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} hips and legs are natural bare skin. ${discardedBottomClause}. Scene details: ${cleanCaptionForUndress}`;
     }
   } else if (isTopOnlyUndress) {
     if (isDress) {
       const dressRemovalClause = isHandledInitially
         ? `${agentPossessive} removed 1-piece dress (${dressGarment}) is held in ${agentPossessive} hand`
         : `${agentPossessive} discarded ${dressGarment} (1 piece) is neatly placed ${placementSpot}`;
-      UNDRESS_PROMPT = `PARTIAL UNDRESS (TOPLESS ONLY): Character 1 has unbuttoned or pulled down ${agentPossessive} 1-piece dress (${dressGarment}). ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} chest and torso are natural bare skin. ${dressRemovalClause}. Scene details: ${englishCaption}`;
+      UNDRESS_PROMPT = `PARTIAL UNDRESS (TOPLESS ONLY): Character 1 has unbuttoned or pulled down ${agentPossessive} 1-piece dress (${dressGarment}). ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} chest and torso are natural bare skin. ${dressRemovalClause}. Scene details: ${cleanCaptionForUndress}`;
     } else {
       const topPieceText = topCount > 1 ? `${topCount} pieces` : '1 piece';
       const discardedTopClause = isHandledInitially
         ? `${agentPossessive} removed ${topGarment} (${topPieceText}) is held in ${agentPossessive} hand`
         : `${agentPossessive} discarded ${topGarment} (${topPieceText}) is neatly placed ${placementSpot}`;
-      UNDRESS_PROMPT = `PARTIAL UNDRESS (TOPLESS ONLY): Character 1 is wearing ${agentPossessive} bottom (${bottomGarment}) on ${agentPossessive} lower body. ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} chest and torso are natural bare skin. ${discardedTopClause}. Scene details: ${englishCaption}`;
+      UNDRESS_PROMPT = `PARTIAL UNDRESS (TOPLESS ONLY): Character 1 is wearing ${agentPossessive} bottom (${bottomGarment}) on ${agentPossessive} lower body. ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} chest and torso are natural bare skin. ${discardedTopClause}. Scene details: ${cleanCaptionForUndress}`;
     }
   } else {
     let discardedFullClause = "";
@@ -2362,7 +2447,7 @@ export const generatePAP = async (
       const topPieceText = topCount > 1 ? `${topCount} pieces` : '1 piece';
       discardedFullClause = `${agentPossessive} discarded ${topGarment} (${topPieceText}) and discarded ${bottomGarment} (1 piece) are neatly placed ${placementSpot}`;
     }
-    UNDRESS_PROMPT = `FULL UNDRESS: Character 1 is completely undressed (100% natural bare skin). ${discardedFullClause}. Scene details: ${englishCaption}`;
+    UNDRESS_PROMPT = `FULL UNDRESS: Character 1 is completely undressed (100% natural bare skin). ${discardedFullClause}. Scene details: ${cleanCaptionForUndress}`;
   }
 
   // Referensi outfit lama HANYA dilanjutkan jika user meminta PAP lanjutan tanpa perintah lepas baju atau ganti pakaian baru
@@ -2839,6 +2924,11 @@ Retain the EXACT SAME LOCATION/SETTING with previous PAP (${analyzedRoom}). Char
         .replace(/\b(?:dim\s+lighting|dimly\s+lit|dim\s+light|soft\s+dim\s+light|moody\s+dim|dim\s+ambient|dim\s+neon\s+lighting)\b/gi, 'clear, well-lit ambient lighting')
         .replace(/\bdim\b/gi, 'clear');
     }
+
+    // Gunakan kecerdasan buatan (LLM) untuk mengaudit prompt, memangkas discarded ganda,
+    // dan menyelaraskan aksi pelepasan pakaian agar tidak berkonflik dengan discarded prop
+    onStatusUpdate?.("AI sedang mengaudit & menyempurnakan prompt (memangkas duplikasi discarded)...");
+    englishPrompt = await refinePromptWithAI(englishPrompt, effectiveUserProfile);
 
     // Kirim prompt yang telah di-engineer ke caller
     onPromptGenerated?.(englishPrompt);
