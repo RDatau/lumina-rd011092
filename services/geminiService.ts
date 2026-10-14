@@ -352,14 +352,18 @@ export const createGeminiClient = (apiKeyOrUserProfile?: string | UserProfile): 
   } else {
     key = getApiKey();
   }
-  return new GoogleGenAI({
-    apiKey: key,
+
+  const clientConfig: any = {
     httpOptions: {
       headers: {
         'User-Agent': 'aistudio-build',
       }
     }
-  });
+  };
+  if (key) {
+    clientConfig.apiKey = key;
+  }
+  return new GoogleGenAI(clientConfig);
 };
 
 export type ClothingStatus = 'worn' | 'unbuttoned' | 'lowered' | 'straps-down' | 'discarded';
@@ -845,14 +849,17 @@ const retryOperation = async (
   for (let i = 0; i < totalAttempts; i++) {
     const keyObj = getNextAvailableGeminiKey(allKeys);
     const activeKey = keyObj?.key || getApiKey(userProfile);
-    const client = new GoogleGenAI({
-      apiKey: activeKey,
+    const clientConfig: any = {
       httpOptions: {
         headers: {
           'User-Agent': 'aistudio-build',
         }
       }
-    });
+    };
+    if (activeKey) {
+      clientConfig.apiKey = activeKey;
+    }
+    const client = new GoogleGenAI(clientConfig);
 
     try {
       return await operation(client, activeKey);
@@ -869,19 +876,37 @@ const retryOperation = async (
                            errorMsg.includes('not valid') || 
                            error.status === 400 || 
                            error.status === 403;
+      const isConnectionError = errorMsg.includes('fetch failed') ||
+                                errorMsg.includes('network') ||
+                                errorMsg.includes('econnreset') ||
+                                errorMsg.includes('etimedout') ||
+                                errorMsg.includes('timeout') ||
+                                errorMsg.includes('socket') ||
+                                errorMsg.includes('connection') ||
+                                errorMsg.includes('aborted') ||
+                                errorMsg.includes('500') ||
+                                errorMsg.includes('503') ||
+                                errorMsg.includes('504') ||
+                                error.status === 500 ||
+                                error.status === 503 ||
+                                error.status === 504;
 
-      if ((isQuotaError || isKeyInvalid) && allKeys.length > 1 && i < totalAttempts - 1) {
-        markGeminiKeyExhausted(activeKey);
-        rotateGeminiKey(allKeys, onStatusUpdate);
-        console.warn(`[Gemini-Cycles] Key #${(keyObj?.index ?? 0) + 1} mengalami ${isQuotaError ? 'Limit Kuota (429)' : 'Key Invalid'}. Berpindah ke Key #${currentGeminiKeyIndex + 1}...`);
-        await new Promise(resolve => setTimeout(resolve, 250));
+      if ((isQuotaError || isKeyInvalid || isConnectionError) && allKeys.length > 1 && i < totalAttempts - 1) {
+        if (isQuotaError || isKeyInvalid) {
+          markGeminiKeyExhausted(activeKey);
+          rotateGeminiKey(allKeys, onStatusUpdate);
+        }
+        const waitTime = isConnectionError ? 1500 * (i + 1) : 250;
+        console.warn(`[Gemini-Retry] Mengalami ${isConnectionError ? 'Koneksi Terputus / Network Drop' : (isQuotaError ? 'Limit Kuota (429)' : 'Key Invalid')}. Mencoba ulang...`);
+        onStatusUpdate?.(`Koneksi terputus sesaat, menyambungkan ulang (${i + 1}/${totalAttempts})...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
         continue;
       }
 
-      if (isQuotaError && allKeys.length <= 1 && i < maxRetries) {
-        // Exponential backoff jika hanya ada 1 key
+      if ((isQuotaError || isConnectionError) && i < maxRetries) {
         const delay = Math.pow(2, i + 1) * 1000;
-        console.warn(`[Gemini] Quota hit (429). Retrying in ${delay/1000}s... (Attempt ${i + 1}/${maxRetries})`);
+        console.warn(`[Gemini-Retry] ${isConnectionError ? 'Koneksi terputus' : 'Quota hit (429)'}. Retry in ${delay/1000}s... (Attempt ${i + 1}/${maxRetries})`);
+        onStatusUpdate?.(`Koneksi terputus, mencoba menyambungkan ulang...`);
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
       }
