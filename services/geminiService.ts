@@ -1100,12 +1100,6 @@ LOGIKA PAP (FOTO) - SANGAT PENTING:
   * Sebutkan ciri fisik user jika kamu mengetahuinya (dari info profil), atau biarkan sistem menggunakan referensi foto profil user.
   * Pastikan interaksi dalam foto (sentuhan, tatapan, kemesraan) sesuai dengan tingkat keintiman hubungan kalian saat ini. JANGAN mesra sama orang lain di depan user kecuali kamu memang berniat memanasi dia.
 
-LOGIKA EDIT FOTO (PHOTO EDITING) & MANIPULASI GAMBAR:
-- JIKA USER MENGUNGGAH FOTO DAN MEMINTA EDIT FOTO (misalnya: "edit foto ini jadi...", "ubah latar belakangnya", "ganti bajunya", "buat orang di Image 1 melakukan ... kepada orang di Image 2", "gabungkan kedua foto ini", dsb):
-  1. Kamu WAJIB menyertakan tag [CAPTION: edit: <instruksi pengeditan detail>] di pesanmu agar sistem memproses pengeditan foto menggunakan AI Image Editing!
-  2. Balaslah dengan antusias, ramah, dan manis sebagai asisten yang siap mengedit fotonya (misalnya: "Boleh sayang, ini aku editkan fotonya sesuai yang kamu mau ya! ✨").
-  3. Di dalam tag [CAPTION: edit: ...], tuliskan secara detail instruksi pengeditan yang harus dilakukan pada foto tersebut (misal: [CAPTION: edit: ubah latar belakang menjadi pemandangan kota malam hari yang estetik] atau [CAPTION: edit: buat orang di Image 1 dan Image 2 saling berpelukan mesra]).
-  4. BEDAKAN DENGAN MINTA PAP: Jika user meminta kamu meniru pose atau memakai pakaian dari foto yang diunggah (misal: "coba kamu tiruin baju ini", "pap pake gaya kayak gini"), itu adalah PAP REFERENSI (gunakan tag [CAPTION: <deskripsi foto dirimu>] biasa). Namun jika user minta mengedit fotonya sendiri atau menggabungkan foto miliknya, itu adalah EDIT FOTO (gunakan tag [CAPTION: edit: ...]).
 
 LOGIKA MEMORI PANGGILAN (SANGAT KRITIKAL):
 - Jika ada pesan dengan awalan "[MEMORI PANGGILAN]", itu adalah transkripsi lengkap pembicaraan telepon kalian sebelumnya (format: Agen: ... Kamu: ...). 
@@ -1129,15 +1123,17 @@ export const reviseAgentResponseBasedOnImage = async (
   const mimeType = header.split(':')[1].split(';')[0];
 
   const prompt = `
-    Kamu sebelumnya berencana mengirim sebuah foto atau hasil edit foto dengan caption dan pesan berikut:
+    Kamu sebelumnya berencana mengirim sebuah foto dengan caption dan pesan berikut:
     "${originalResponse}"
 
+    Namun, AI Image Generator terkadang menghasilkan foto yang sedikit berbeda dari deskripsimu (misalnya posenya berbeda, atau pakaiannya sedikit berbeda).
+    
     Tugasmu sekarang:
     1. LIHAT foto yang benar-benar dihasilkan (terlampir).
     2. REVISI pesan aslimu agar SESUAI dengan apa yang BENAR-BENAR ada di foto tersebut.
-    3. Jika ini adalah hasil edit foto milik user (misal mengedit warna pakaian, latar belakang, atau menggabungkan foto), berikan apresiasi dan penjelasan manis tentang hasil editan fotonya sesuai personamu.
-    4. Jika ini adalah foto dirimu (PAP), bicaralah seolah-olah itu foto dirimu yang baru kamu ambil.
-    5. JANGAN sebutkan bahwa "AI salah" atau "fotonya beda".
+    3. Jika di foto kamu sedang duduk, jangan bilang kamu sedang ngangkang atau tiduran. Jika di foto kamu tersenyum, jangan bilang kamu sedang cemberut.
+    4. Pertahankan gaya bahasa, nada, dan persona aslimu.
+    5. JANGAN sebutkan bahwa "AI salah" atau "fotonya beda". Anggap saja foto yang terlampir adalah foto yang memang sengaja kamu ambil dan kirim.
     6. JANGAN sertakan tag [CAPTION: ...] lagi di balasanmu ini. Langsung saja tulis pesan chatnya.
   `;
 
@@ -1719,99 +1715,6 @@ export const generateFirstPapContext = (userPrompt: string, isAgentMale: boolean
   }
 };
 
-export interface ImageIntentResult {
-  intent: 'EDIT_SINGLE' | 'EDIT_MULTI' | 'AGENT_PAP_REF' | 'AGENT_PAP_SELF';
-  editInstruction: string;
-}
-
-/**
- * Menganalisa User Intent secara cerdas:
- * Membedakan apakah user meminta Edit Foto (tunggal/multi) atau meminta PAP Karakter/Agen.
- */
-export const classifyUserImageIntent = async (
-  rawCaption: string,
-  userMessage: string,
-  uploadedImagesCount: number,
-  agentName: string,
-  userProfile?: UserProfile
-): Promise<ImageIntentResult> => {
-  if (uploadedImagesCount === 0) {
-    return { intent: 'AGENT_PAP_SELF', editInstruction: '' };
-  }
-
-  const combinedText = `${userMessage} ${rawCaption}`.toLowerCase();
-  const isRawEditCaption = rawCaption.toLowerCase().startsWith('edit:');
-  const isExplicitEditCmd = isRawEditCaption || /\b(?:edit\s+foto|edit\s+gambar|edit\s+image|ubah\s+foto|ubah\s+gambar|ganti\s+background|hapus\s+background|satukan|gabungkan\s+(?:foto|gambar|dua|2)|buat\s+agar\s+orang\s+di\s+image|orang\s+di\s+image\s*1|orang\s+di\s+foto\s*1|photoshop|retouch|editkan|tolong\s+edit)\b/i.test(combinedText);
-  const isExplicitAgentPapCmd = /\b(?:kamu\s+pake|coba\s+kamu|kamu\s+tiruin|tiruin\s+pose|kamu\s+pose|pap\s+kamu|pap\s+dong\s+pake|foto\s+kamu\s+pake|coba\s+kamu\s+cosplay|kamu\s+cocok\s+pake)\b/i.test(combinedText);
-
-  try {
-    const ai = createGeminiClient(userProfile);
-    const model = getActiveTextModel(userProfile) || "gemini-3.1-flash-lite";
-
-    const prompt = `You are a Visual AI Intent Classifier and Image Editing Prompt Engineer.
-Analyze the user's intent when uploading image(s) to the AI chat assistant "${agentName}":
-- User Message: "${userMessage}"
-- Caption / Scene Context: "${rawCaption}"
-- Number of Uploaded Images: ${uploadedImagesCount}
-- Assistant Name: "${agentName}"
-
-Categorize into exactly one intent:
-1. "EDIT_SINGLE": The user uploaded 1 image and explicitly wants to EDIT/MODIFY that image itself (e.g., change background, alter clothes, modify hairstyle/color, remove/add objects, turn into anime/cyberpunk, etc.). The subject of the photo is the person/subject in the uploaded image, NOT ${agentName}.
-2. "EDIT_MULTI": The user uploaded 2 or more images and wants composition, interaction, or blending between Image 1 and Image 2 (e.g. "make person in Image 1 interact with person in Image 2", combine scenes, face-swap, etc.).
-3. "AGENT_PAP_REF": The user uploaded image(s) as a reference for assistant "${agentName}" to take a selfie/photo of herself (e.g., "try wearing this outfit", "copy this pose", "cosplay this character", "PAP like this").
-4. "AGENT_PAP_SELF": Normal photo/PAP of "${agentName}".
-
-Instructions:
-- If intent is "EDIT_SINGLE" or "EDIT_MULTI", produce "editInstruction" as a fluent, concise, professional English photo-editing prompt describing the exact changes to apply to Image 1 (or between Image 1 and Image 2).
-- Return ONLY a strict JSON object with fields: "intent" and "editInstruction". No markdown codeblocks or extra text.`;
-
-    const res = await ai.models.generateContent({
-      model,
-      contents: [{ parts: [{ text: prompt }] }],
-      config: {
-        temperature: 0.1,
-        maxOutputTokens: 300,
-        responseMimeType: "application/json",
-        safetySettings: safetySettings as any,
-      }
-    });
-
-    const text = res.text?.trim() || '';
-    const cleaned = text.replace(/^```json\s*|```$/g, '').trim();
-    if (cleaned.startsWith('{')) {
-      const parsed = JSON.parse(cleaned);
-      if (parsed.intent) {
-        return {
-          intent: parsed.intent as any,
-          editInstruction: parsed.editInstruction || userMessage.replace(/edit\s+foto\s+ini\s+jadi\s*/i, '').trim()
-        };
-      }
-    }
-  } catch (err) {
-    console.warn("[classifyUserImageIntent] Gemini classification fallback:", err);
-  }
-
-  // Fallback heuristics:
-  if (uploadedImagesCount >= 2 && (combinedText.includes('image 1') || combinedText.includes('foto 1') || combinedText.includes('gabung') || combinedText.includes('satukan') || isExplicitEditCmd)) {
-    return {
-      intent: 'EDIT_MULTI',
-      editInstruction: userMessage.replace(/^(buat\s+agar|bikin\s+agar)\s+/i, '').trim()
-    };
-  }
-
-  if (uploadedImagesCount >= 1 && isExplicitEditCmd && !isExplicitAgentPapCmd) {
-    return {
-      intent: 'EDIT_SINGLE',
-      editInstruction: userMessage.replace(/edit\s+foto\s+ini\s+jadi\s*/i, '').trim()
-    };
-  }
-
-  return {
-    intent: uploadedImagesCount > 0 ? 'AGENT_PAP_REF' : 'AGENT_PAP_SELF',
-    editInstruction: ''
-  };
-};
-
 export const generatePAP = async (
   fullResponse: string, 
   config: AgentConfig, 
@@ -1869,112 +1772,6 @@ export const generatePAP = async (
     }
   }
   const hasUserPic = !!resolvedUserPic;
-
-  // Cerdas klasifikasikan User Intent: Apakah Edit Foto (Tunggal/Multi) atau PAP Karakter/Agen
-  const lastUserMsg = [...history].reverse().find(m => m.role === 'user')?.text || '';
-  const intentResult = await classifyUserImageIntent(rawCaption, lastUserMsg, outfitImages.length, config.name, effectiveUserProfile);
-
-  const isPhotoEditSingle = intentResult.intent === 'EDIT_SINGLE' && outfitImages.length >= 1;
-  const isPhotoEditMulti = intentResult.intent === 'EDIT_MULTI' && outfitImages.length >= 2;
-  const isPhotoEditing = isPhotoEditSingle || isPhotoEditMulti;
-
-  if (isPhotoEditing) {
-    onStatusUpdate?.(isPhotoEditMulti ? "Mempersiapkan penggabungan 2 foto..." : "Mempersiapkan pengeditan foto...");
-    let targetAspectRatio = "3:4";
-    if (outfitImages[0]?.data) {
-      targetAspectRatio = await getImageAspectRatio(outfitImages[0].data);
-    }
-
-    let englishPrompt = "";
-    let baseImage: string = outfitImages[0].data;
-    let extraRefImage: string | null = null;
-    const additionalImages: string[] = [];
-
-    if (isPhotoEditSingle) {
-      onStatusUpdate?.("Mempersiapkan Foto User (Image 1 yang akan diedit)...", { slot: 1, label: "Image 1: Foto Asli (Akan Diedit)", url: outfitImages[0].data });
-      englishPrompt = `PHOTO EDIT: In Image 1, ${intentResult.editInstruction || englishCaption}. High resolution, photographic realism, seamless natural editing, keep unedited areas intact.`;
-    } else {
-      extraRefImage = outfitImages[1].data;
-      if (outfitImages.length > 2) {
-        outfitImages.slice(2).forEach(img => {
-          if (img?.data) additionalImages.push(img.data);
-        });
-      }
-      onStatusUpdate?.("Mempersiapkan Image 1 (Foto Pertama)...", { slot: 1, label: "Image 1: Subjek / Foto 1", url: outfitImages[0].data });
-      onStatusUpdate?.("Mempersiapkan Image 2 (Foto Kedua)...", { slot: 2, label: "Image 2: Subjek / Foto 2", url: outfitImages[1].data });
-      englishPrompt = `PHOTO EDIT: Compose and combine Image 1 and Image 2: ${intentResult.editInstruction || englishCaption}. Seamless perspective, natural interaction, matching lighting and shadows between Image 1 and Image 2.`;
-    }
-
-    onPromptGenerated?.(englishPrompt, { baseImage, extraRefImage, additionalImages });
-
-    const activeImageModel = getActiveImageModel(userProfile);
-    if (activeImageModel === 'hf-qwen-image-edit' || activeImageModel.startsWith('hf-')) {
-      const globalSettings = getEffectiveGlobalGeminiSettings();
-      const hfSpaceUrl = globalSettings.hfSpaceUrl || userProfile?.hfSpaceUrl || DEFAULT_QWEN_SPACE_URL;
-      const hfTokens = globalSettings.hfTokens || userProfile?.hfTokens || '';
-      const hfApiEndpoint = globalSettings.hfApiEndpoint || userProfile?.hfApiEndpoint || '/infer';
-
-      if (!hfSpaceUrl) {
-        throw new Error("URL Hugging Face Space belum diatur. Silakan atur URL Space di menu Pengaturan > Model Image Generation.");
-      }
-
-      if (extraRefImage) {
-        onStatusUpdate?.("Menyelaraskan aspek rasio referensi (Slot 2)...", { slot: 2, label: "Menyelaraskan Rasio Image 2", url: extraRefImage });
-        extraRefImage = await matchAspectRatioWithBlackFill(baseImage, extraRefImage);
-      }
-      for (let i = 0; i < additionalImages.length; i++) {
-        additionalImages[i] = await matchAspectRatioWithBlackFill(baseImage, additionalImages[i]);
-      }
-
-      onStatusUpdate?.("Menghubungkan ke Space ZeroGPU Hugging Face...");
-      return await generateWithHuggingFaceSpace(
-        baseImage,
-        englishPrompt,
-        {
-          spaceUrl: hfSpaceUrl,
-          tokens: hfTokens || '',
-          apiEndpoint: hfApiEndpoint,
-          injectNegativePrompt: false,
-          injectAnatomyGuard: true,
-        },
-        onStatusUpdate,
-        extraRefImage,
-        additionalImages
-      );
-    }
-
-    return await retryOperation(async (aiClient) => {
-      const parts: any[] = [];
-      const [h1, d1] = baseImage.split(',');
-      parts.push({ text: `IMAGE 1 (USER PHOTO):` });
-      parts.push({ inlineData: { mimeType: h1.split(':')[1].split(';')[0], data: d1 } });
-
-      if (extraRefImage) {
-        const [h2, d2] = extraRefImage.split(',');
-        parts.push({ text: `IMAGE 2 (USER PHOTO 2):` });
-        parts.push({ inlineData: { mimeType: h2.split(':')[1].split(';')[0], data: d2 } });
-      }
-
-      parts.push({ text: englishPrompt });
-      const selectedModel = (activeImageModel === 'gemini-3.1-flash-image') ? 'gemini-3.1-flash-image' : 'gemini-3.1-flash-lite-image';
-      const response = await aiClient.models.generateContent({
-        model: selectedModel,
-        contents: { parts },
-        config: {
-          imageConfig: { aspectRatio: targetAspectRatio } as any,
-          safetySettings: safetySettings as any
-        }
-      });
-      if (response && response.candidates?.[0]?.content?.parts) {
-        for (const p of response.candidates[0].content.parts) {
-          if (p.inlineData && p.inlineData.data) {
-            return `data:${p.inlineData.mimeType || 'image/png'};base64,${p.inlineData.data}`;
-          }
-        }
-      }
-      return null;
-    }, userProfile);
-  }
 
   // Deteksi profil user untuk ciri fisik & gender jika foto profil user belum ada
   const userPersonality = (effectiveUserProfile?.personalityInfo || '').toLowerCase();
@@ -2104,8 +1901,8 @@ export const generatePAP = async (
     return isSameOutfit || isRecent;
   }) || (papsInHistory.length > 1 ? papsInHistory[1] : null) : null;
 
-  const lastUserMsg = [...history].reverse().find(m => m.role === 'user')?.text || '';
-  const combinedTextForCheck = `${lowCaption} ${lastUserMsg.toLowerCase()}`;
+  const recentUserMsg = [...history].reverse().find(m => m.role === 'user')?.text || '';
+  const combinedTextForCheck = `${lowCaption} ${recentUserMsg.toLowerCase()}`;
 
   // Deteksi perintah ganti baju vs lepas pakaian/undress
   const undressKeywords = [
@@ -2176,7 +1973,7 @@ export const generatePAP = async (
   const bottomUndressKeywords = ['buka celana', 'lepas celana', 'copot celana', 'buka rok', 'lepas rok', 'tanpa celana', 'tanpa rok', 'bottomless', 'buka cd', 'lepas cd', 'tanpa cd', 'gapake celana', 'gak pake celana', 'nggak pake celana', 'ga pake celana'];
   const topUndressKeywords = ['buka baju', 'lepas baju', 'copot baju', 'buka kaos', 'lepas kaos', 'buka bra', 'lepas bra', 'buka bh', 'lepas bh', 'topless', 'tanpa baju', 'tanpa kaos', 'tanpa bra', 'tanpa bh', 'gapake baju', 'gak pake baju', 'nggak pake baju', 'ga pake baju'];
 
-  const lowUserMsg = lastUserMsg.toLowerCase();
+  const lowUserMsg = recentUserMsg.toLowerCase();
   const isUserBottomUndress = bottomUndressKeywords.some(kw => lowUserMsg.includes(kw));
   const isUserTopUndress = topUndressKeywords.some(kw => lowUserMsg.includes(kw));
   const isUserFullUndress = lowUserMsg.includes('semua') || lowUserMsg.includes('telanjang') || lowUserMsg.includes('bugil') || lowUserMsg.includes('naked') || lowUserMsg.includes('nude') || (isUserBottomUndress && isUserTopUndress);
