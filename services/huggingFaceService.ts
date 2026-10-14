@@ -61,12 +61,12 @@ export const markTokenExhausted = (token: string) => {
 };
 
 /**
- * Parsing string tokens (pemisah: baris baru, koma, titik koma)
+ * Parsing string tokens (pemisah: baris baru / Enter, koma, titik koma)
  */
 export const parseHFTokens = (tokensInput?: string): string[] => {
   if (!tokensInput) return [];
   return tokensInput
-    .split(/[\n,;]+/)
+    .split(/[\r\n,;]+/)
     .map(t => t.trim())
     .filter(t => t.length > 0);
 };
@@ -100,9 +100,7 @@ export const proxyFetch = async (targetUrl: string, init?: RequestInit): Promise
   const proxyUrl = toProxyUrl(targetUrl);
   try {
     const resp = await fetch(proxyUrl, init);
-    if (resp.status !== 404) {
-      return resp;
-    }
+    return resp;
   } catch (proxyErr) {
     console.warn("[HF-Proxy] Proxy request error, attempting direct fetch fallback:", proxyErr);
   }
@@ -231,16 +229,19 @@ const rotateToken = (tokens: string[], onStatus?: (status: string) => void): str
 export const fetchUrlToDataUrl = async (url: string, token?: string): Promise<string> => {
   if (url.startsWith('data:')) return url;
 
+  // Sanitize internal container URLs
+  let targetUrl = url.replace(/^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?/i, '');
+
   const headers: Record<string, string> = {};
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  let resp = await proxyFetch(url, { headers });
+  let resp = await proxyFetch(targetUrl, { headers });
   
   // Jika 404 dan url mengandung /file=, coba tukar antara /gradio_api/file= dan /file=
-  if (!resp.ok && url.includes('/file=')) {
-    const altUrl = url.includes('/gradio_api/file=')
-      ? url.replace('/gradio_api/file=', '/file=')
-      : url.replace('/file=', '/gradio_api/file=');
+  if (!resp.ok && targetUrl.includes('/file=')) {
+    const altUrl = targetUrl.includes('/gradio_api/file=')
+      ? targetUrl.replace('/gradio_api/file=', '/file=')
+      : targetUrl.replace('/file=', '/gradio_api/file=');
     try {
       const altResp = await proxyFetch(altUrl, { headers });
       if (altResp.ok) {
@@ -250,7 +251,7 @@ export const fetchUrlToDataUrl = async (url: string, token?: string): Promise<st
   }
 
   if (!resp.ok) {
-    throw new Error(`Failed to fetch image from ${url}: ${resp.statusText}`);
+    throw new Error(`Failed to fetch image from ${targetUrl}: ${resp.statusText}`);
   }
   const blob = await resp.blob();
 
@@ -267,10 +268,19 @@ export const fetchUrlToDataUrl = async (url: string, token?: string): Promise<st
  */
 const uploadToGradio = async (spaceHost: string, dataUrl: string, token?: string): Promise<any> => {
   try {
-    const parts = dataUrl.split(',');
-    const mimeMatch = parts[0].match(/:(.*?);/);
+    let effectiveDataUrl = dataUrl;
+    if (dataUrl.startsWith('http://') || dataUrl.startsWith('https://')) {
+      try {
+        effectiveDataUrl = await fetchUrlToDataUrl(dataUrl, token);
+      } catch (e) {
+        console.warn("[HF-Upload] Convert remote URL to dataUrl failed:", e);
+      }
+    }
+
+    const parts = effectiveDataUrl.split(',');
+    const mimeMatch = parts[0]?.match(/:(.*?);/);
     const mime = mimeMatch ? mimeMatch[1] : 'image/png';
-    const binary = atob(parts[1]);
+    const binary = atob(parts[1] || '');
     const array = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) array[i] = binary.charCodeAt(i);
     const blob = new Blob([array], { type: mime });
@@ -288,24 +298,15 @@ const uploadToGradio = async (spaceHost: string, dataUrl: string, token?: string
 
     for (const ep of uploadEndpoints) {
       try {
-        // Coba upload langsung terlebih dahulu jika didukung oleh browser CORS Space
         let resp: Response | null = null;
         try {
-          resp = await fetch(ep, {
-            method: 'POST',
-            headers,
-            body: formData
-          });
-        } catch (directErr) {
-          // Fallback ke proxy
-        }
-
-        if (!resp || !resp.ok) {
           resp = await proxyFetch(ep, {
             method: 'POST',
             headers,
             body: formData
           });
+        } catch (fetchErr) {
+          console.warn("[HF-Upload] Proxy upload attempt error:", fetchErr);
         }
 
         if (resp && resp.ok) {
@@ -313,9 +314,12 @@ const uploadToGradio = async (spaceHost: string, dataUrl: string, token?: string
           if (text.startsWith('[')) {
             const data = JSON.parse(text);
             if (Array.isArray(data) && data.length > 0) {
+              const item = data[0];
+              const filePath = typeof item === 'string' ? item : (item?.path || item?.name || '');
+              const fileUrl = typeof item === 'object' && item?.url ? item.url : `${spaceHost}/gradio_api/file=${filePath}`;
               return {
-                path: data[0],
-                url: `${spaceHost}/gradio_api/file=${data[0]}`,
+                path: filePath,
+                url: fileUrl,
                 orig_name: 'input_image.png',
                 size: blob.size,
                 mime_type: mime,
@@ -326,12 +330,27 @@ const uploadToGradio = async (spaceHost: string, dataUrl: string, token?: string
         }
       } catch (err) {}
     }
+
+    // Fallback: kembalikan objek FileData langsung jika endpoint upload tidak dapat diakses
+    return {
+      path: null,
+      url: effectiveDataUrl,
+      orig_name: 'input_image.png',
+      size: blob.size,
+      mime_type: mime,
+      meta: { _type: 'gradio.FileData' }
+    };
   } catch (err) {
     console.warn("[HF-Upload] Upload error:", err);
+    return {
+      path: null,
+      url: dataUrl,
+      orig_name: 'input_image.png',
+      size: 0,
+      mime_type: 'image/png',
+      meta: { _type: 'gradio.FileData' }
+    };
   }
-
-  // Jika Space menolak upload, lempar error jelas alih-alih dataUrl mentah yang ditolak Gradio modern
-  throw new Error("Gagal mengunggah foto referensi ke server Hugging Face Space. Pastikan URL Space aktif dan dapat diakses.");
 };
 
 /**
@@ -370,8 +389,13 @@ const extractImageFromGradioOutput = async (data: any, spaceHost: string, token?
     throw new Error("Gradio tidak mengembalikan gambar valid dalam outputnya: " + JSON.stringify(data).slice(0, 200));
   }
 
+  // Replace container internal localhost/127.0.0.1 with spaceHost
+  imgRef = imgRef.replace(/^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?/i, spaceHost);
+
   if (imgRef.startsWith('/file=') || imgRef.startsWith('/gradio_api/file=')) {
     imgRef = `${spaceHost}${imgRef}`;
+  } else if (imgRef.startsWith('/tmp/')) {
+    imgRef = `${spaceHost}/gradio_api/file=${imgRef}`;
   }
 
   return await fetchUrlToDataUrl(imgRef, token);
@@ -405,6 +429,7 @@ const callGradioModernSSE = async (
   let initResp: Response | null = null;
   let chosenBaseCallUrl = '';
   let lastErrorText = '';
+  let lastStatus = 0;
 
   for (const url of callUrls) {
     try {
@@ -414,6 +439,7 @@ const callGradioModernSSE = async (
         body: JSON.stringify({ data: payloadData })
       });
 
+      lastStatus = resp.status;
       const raw = await resp.text();
       if (resp.ok && raw.includes('event_id')) {
         initResp = new Response(raw, { status: resp.status, headers: resp.headers });
@@ -431,7 +457,10 @@ const callGradioModernSSE = async (
     if (lastErrorText.toLowerCase().includes('sleeping')) {
       throw new Error("Space Hugging Face saat ini dalam status 'Sleeping'. Silakan buka halaman Space di browser untuk membangunkannya.");
     }
-    throw new Error(`Gagal memulai tugas di Space (${cleanEndpoint}): ${lastErrorText.slice(0, 150)}`);
+    throw {
+      status: lastStatus || 500,
+      message: `Gagal memulai tugas di Space (${cleanEndpoint}): ${lastErrorText.slice(0, 150)}`
+    };
   }
 
   const rawInitText = await initResp.text();
@@ -449,7 +478,12 @@ const callGradioModernSSE = async (
 
   onStatus?.("Menunggu antrean dan eksekusi GPU...");
   const streamUrl = `${chosenBaseCallUrl}/${eventId}`;
-  const streamResp = await proxyFetch(streamUrl, { headers });
+  const streamHeaders: Record<string, string> = {
+    'Accept': 'text/event-stream'
+  };
+  if (token) streamHeaders['Authorization'] = `Bearer ${token}`;
+
+  const streamResp = await proxyFetch(streamUrl, { headers: streamHeaders });
 
   if (!streamResp.ok) {
     const errText = await streamResp.text().catch(() => '');
@@ -466,6 +500,7 @@ const callGradioModernSSE = async (
   const decoder = new TextDecoder();
   let buffer = '';
   let finalResult: any = null;
+  let currentEvent = '';
 
   while (true) {
     const { done, value } = await reader.read();
@@ -475,9 +510,12 @@ const callGradioModernSSE = async (
     const lines = buffer.split('\n');
     buffer = lines.pop() || '';
 
-    let currentEvent = '';
     for (const line of lines) {
       const trimmed = line.trim();
+      if (!trimmed) {
+        // SSE double newline / event boundary
+        continue;
+      }
       if (trimmed.startsWith('event:')) {
         currentEvent = trimmed.replace('event:', '').trim();
       } else if (trimmed.startsWith('data:')) {
@@ -488,6 +526,7 @@ const callGradioModernSSE = async (
           } catch (e) {
             finalResult = rawJson;
           }
+          currentEvent = '';
         } else if (currentEvent === 'error') {
           const cleanErr = rawJson && rawJson !== 'null' ? rawJson : 'Antrean GPU penuh atau Space mengembalikan error internal';
           throw new Error(`Space Execution Error: ${cleanErr}`);
@@ -500,6 +539,14 @@ const callGradioModernSSE = async (
           } catch (e) {}
         } else if (currentEvent === 'generating') {
           onStatus?.("Sedang memproses gambar di ZeroGPU...");
+        } else {
+          // If no event header or unrecognized event, check if data payload contains complete result
+          try {
+            const parsed = JSON.parse(rawJson);
+            if (Array.isArray(parsed) && parsed.length > 0 && !finalResult) {
+              finalResult = parsed;
+            }
+          } catch (e) {}
         }
       }
     }
@@ -609,10 +656,13 @@ const isQuotaOrLimitError = (err: any): boolean => {
  */
 const inspectSpaceEndpoint = async (
   spaceHost: string,
-  requestedEndpoint: string
+  requestedEndpoint: string,
+  token?: string
 ): Promise<{ endpoint: string; inputComponents: GradioInputComponent[] }> => {
   try {
-    const configResp = await proxyFetch(`${spaceHost}/config`);
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const configResp = await proxyFetch(`${spaceHost}/config`, { headers });
     if (configResp.ok) {
       const text = await configResp.text();
       if (text.startsWith('{')) {
@@ -803,12 +853,13 @@ export const generateWithHuggingFaceSpace = async (
 
   // Otomatis inspeksi /config Space untuk menentukan endpoint dan struktur argumen
   onStatusUpdate?.("Mendeteksi konfigurasi Space ZeroGPU...", inputImage ? { slot: 1, label: "Image 1: Base (Identitas Karakter)", url: inputImage } : undefined);
-  const { endpoint, inputComponents } = await inspectSpaceEndpoint(spaceHost, requestedEndpoint);
+  const { endpoint, inputComponents } = await inspectSpaceEndpoint(spaceHost, requestedEndpoint, tokens[0] || undefined);
 
   // Maksimum percobaan rotasi sejumlah token yang tersedia
   const maxAttempts = Math.max(1, tokens.length);
   let attempts = 0;
   let lastError: any = null;
+  let payloadData: any[] = [];
 
   while (attempts < maxAttempts) {
     attempts++;
@@ -858,7 +909,7 @@ export const generateWithHuggingFaceSpace = async (
       }
 
       // Bangun payload data dinamis berdasarkan skema komponen Space
-      let payloadData: any[] = [];
+      payloadData = [];
 
       if (inputComponents.length > 0) {
         let imageInputCount = 0;

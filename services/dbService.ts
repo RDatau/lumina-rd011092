@@ -54,13 +54,13 @@ export const getEffectiveGlobalGeminiSettings = (dbSettings?: Partial<GlobalGemi
     imageModel: local.imageModel || dbSettings?.imageModel || DEFAULT_GLOBAL_GEMINI_SETTINGS.imageModel,
     useGoogleSearch: local.useGoogleSearch ?? dbSettings?.useGoogleSearch ?? DEFAULT_GLOBAL_GEMINI_SETTINGS.useGoogleSearch,
     hfSpaceUrl: (() => {
-      const raw = (local.hfSpaceUrl ?? dbSettings?.hfSpaceUrl ?? '').trim();
+      const raw = ((local.hfSpaceUrl && local.hfSpaceUrl.trim()) ? local.hfSpaceUrl : (dbSettings?.hfSpaceUrl || '')).trim();
       return (!raw || raw === 'https' || raw === 'https://' || raw === 'http' || raw === 'http://')
         ? DEFAULT_QWEN_SPACE_URL
         : raw;
     })(),
-    hfTokens: (local.hfTokens ?? dbSettings?.hfTokens ?? '').trim(),
-    hfApiEndpoint: (local.hfApiEndpoint ?? dbSettings?.hfApiEndpoint ?? '/infer').trim(),
+    hfTokens: ((local.hfTokens && local.hfTokens.trim()) ? local.hfTokens : (dbSettings?.hfTokens || '')).trim(),
+    hfApiEndpoint: (local.hfApiEndpoint || dbSettings?.hfApiEndpoint || '/infer').trim(),
     injectNegativePrompt: typeof local.injectNegativePrompt === 'boolean'
       ? local.injectNegativePrompt
       : (typeof dbSettings?.injectNegativePrompt === 'boolean'

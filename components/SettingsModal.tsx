@@ -858,31 +858,18 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                             <textarea 
                               rows={3}
                               className={`w-full p-2.5 text-xs font-mono rounded-xl border ${dynamicBorderColor} ${isBackgroundDark ? 'bg-black/20 text-white' : 'bg-white/60 text-black'} outline-none focus:border-indigo-400/60 transition-all resize-none`}
-                              placeholder={"AIzaSyKeyAkun1\nAIzaSyKeyAkun2 (opsional, rotasi otomatis saat limit 429)\nAIzaSyKeyAkun3..."}
+                              placeholder={"AIzaSyKeyAkun1\nAIzaSyKeyAkun2 (dipisah dengan Enter)\nAIzaSyKeyAkun3..."}
                               style={{ WebkitTextSecurity: showApiKey ? 'none' : 'disc' } as any}
                               value={userProfile.geminiApiKey || ''}
                               onChange={(e) => {
                                 updateGlobalGemini({ geminiApiKey: e.target.value });
                                 setValidationResult(null);
                               }}
-                              /* --- TAMBAHKAN DUA EVENT DI BAWAH INI --- */
-                              onInput={(e) => {
-                                const val = (e.target as HTMLTextAreaElement).value;
-                                updateGlobalGemini({ geminiApiKey: val });
-                                setValidationResult(null);
-                              }}
-                              onPaste={(e) => {
-                                const pasted = e.clipboardData.getData('text');
-                                if (pasted) {
-                                updateGlobalGemini({ geminiApiKey: pasted });
-                                setValidationResult(null);
-                                }
-                              }}
                             />
 
                             <div className="flex items-center justify-between gap-2 pt-0.5">
                               <p className={`text-[8px] ${dynamicMutedTextColor} leading-relaxed flex-1`}>
-                                💡 <strong>Siklus Rotasi (Cycles):</strong> Masukkan 1 atau beberapa API Key Gemini (satu baris per key). Saat limit 429 atau kuota habis, sistem otomatis beralih (*auto-rotate*) ke key berikutnya secara transparan tanpa menghentikan percakapan!
+                                💡 <strong>Siklus Rotasi (Cycles):</strong> Masukkan 1 atau beberapa API Key Gemini (dipisah dengan baris baru / Enter). Saat limit 429 atau kuota habis, sistem otomatis beralih (*auto-rotate*) ke key berikutnya secara transparan tanpa menghentikan percakapan!
                               </p>
                               <button 
                                 type="button"
@@ -1144,13 +1131,13 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                               <textarea
                                 rows={3}
                                 className={`w-full p-2 text-xs font-mono rounded-xl border ${dynamicBorderColor} ${isBackgroundDark ? 'bg-black/20 text-white' : 'bg-white/60 text-black'} outline-none focus:border-amber-400/60 transition-all resize-none`}
-                                placeholder={"hf_tokenAkun1\nhf_tokenAkun2 (opsional, rotasi otomatis saat kuota akun 1 limit)\nhf_tokenAkun3..."}
+                                placeholder={"hf_tokenAkun1\nhf_tokenAkun2 (dipisah dengan Enter)\nhf_tokenAkun3..."}
                                 style={{ WebkitTextSecurity: showHfTokens ? 'none' : 'disc' } as any}
                                 value={userProfile.hfTokens || ''}
                                 onChange={(e) => updateGlobalGemini({ hfTokens: e.target.value })}
                               />
                               <p className={`text-[8px] ${dynamicMutedTextColor} leading-relaxed`}>
-                                💡 <strong>Ganti-ganti Akun Otomatis:</strong> Masukkan 1 atau beberapa token HF (satu baris per akun). Jika kuota ZeroGPU akun pertama limit (429/Exceeded), sistem akan otomatis berpindah ke akun berikutnya tanpa Anda harus keluar dari chat!
+                                💡 <strong>Ganti-ganti Akun Otomatis:</strong> Masukkan 1 atau beberapa token HF (dipisah dengan baris baru / Enter). Jika kuota ZeroGPU akun pertama limit (429/Exceeded), sistem akan otomatis berpindah ke akun berikutnya tanpa Anda harus keluar dari chat!
                               </p>
                             </div>
 

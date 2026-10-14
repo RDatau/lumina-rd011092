@@ -62,22 +62,26 @@ async function startServer() {
         forwardHeaders['accept'] = req.headers['accept'] as string;
       }
 
-      const fetchOptions: RequestInit = {
+      const fetchOptions: any = {
         method: req.method,
         headers: forwardHeaders,
         redirect: 'follow',
       };
 
       if (req.method !== 'GET' && req.method !== 'HEAD') {
+        fetchOptions.duplex = 'half';
         if (Buffer.isBuffer(req.body) && req.body.length > 0) {
           fetchOptions.body = req.body;
+          forwardHeaders['content-length'] = String(req.body.length);
         } else if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
           fetchOptions.body = JSON.stringify(req.body);
           if (!forwardHeaders['content-type']) {
             forwardHeaders['content-type'] = 'application/json';
           }
+          forwardHeaders['content-length'] = String(Buffer.byteLength(fetchOptions.body));
         } else if (typeof req.body === 'string' && req.body.length > 0) {
           fetchOptions.body = req.body;
+          forwardHeaders['content-length'] = String(Buffer.byteLength(req.body));
         }
       }
 
@@ -96,10 +100,14 @@ async function startServer() {
       if (contentType && contentType.includes('text/event-stream')) {
         res.setHeader('cache-control', 'no-cache');
         res.setHeader('connection', 'keep-alive');
+        res.setHeader('content-type', 'text/event-stream; charset=utf-8');
         res.flushHeaders?.();
 
         if (upstreamResp.body) {
           const reader = upstreamResp.body.getReader();
+          req.on('close', () => {
+            reader.cancel().catch(() => {});
+          });
           try {
             while (true) {
               const { done, value } = await reader.read();

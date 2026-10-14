@@ -236,12 +236,12 @@ const getFallbackTitle = (text: string): string => {
 };
 
 /**
- * Parsing string Gemini API keys (pemisah: baris baru, koma, titik koma)
+ * Parsing string Gemini API keys (pemisah: baris baru / Enter, koma, titik koma)
  */
 export const parseGeminiApiKeys = (input?: string): string[] => {
   if (!input) return [];
   return input
-    .split(/[\n,;\t\s]+/)
+    .split(/[\r\n,;]+/)
     .map(k => k.trim())
     .filter(k => k.length > 10);
 };
