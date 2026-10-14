@@ -1313,7 +1313,20 @@ export const generateAgentResponse = async (
   }, effectiveUserProfile);
 };
 
-const previousPapAnalysisCache = new Map<string, { outfitPrompt: string; roomPrompt: string; placementSurface?: string; isNude: boolean }>();
+export interface PreviousPapAnalysis {
+  outfitPrompt: string;
+  roomPrompt: string;
+  placementSurface: string;
+  isNude: boolean;
+  topGarment?: string;
+  topCount?: number;
+  bottomGarment?: string;
+  bottomCount?: number;
+  isDress?: boolean;
+  dressGarment?: string;
+}
+
+const previousPapAnalysisCache = new Map<string, PreviousPapAnalysis>();
 
 export const derivePlacementSurface = (roomStr: string): string => {
   if (!roomStr) return "on a suitable nearby surface in the setting";
@@ -1344,21 +1357,21 @@ export const derivePlacementSurface = (roomStr: string): string => {
 
 export interface GarmentBreakdown {
   isDress: boolean; // true jika 1 potong gaun/dress/daster/jumpsuit/nightdress
-  topCount: number; // 0 atau 1 (jumlah potong atasan)
+  topCount: number; // 0, 1 (single top), atau 2 (layered dengan jaket/cardigan)
   bottomCount: number; // 0 atau 1 (jumlah potong bawahan)
   dressCount: number; // 0 atau 1 (jumlah potong gaun)
   totalWornPieces: number; // Total potong pakaian yang melekat di tubuh
-  topGarment: string; // Detail atasan (warna, corak, fabric, jenis)
-  bottomGarment: string; // Detail bawahan (warna, corak, fabric, jenis)
-  dressGarment: string; // Detail gaun (warna, corak, fabric, jenis)
+  topGarment: string; // Detail atasan (warna, corak, fabric, jenis potongan)
+  bottomGarment: string; // Detail bawahan (warna, corak, fabric, jenis potongan)
+  dressGarment: string; // Detail gaun (warna, corak, fabric, jenis potongan)
   summaryText: string; // Ringkasan perhitungan hitungan pakaian
 }
 
 /**
  * Ekstraksi dan perhitungan presisi bagian pakaian:
- * - Atasan (Top) = berapa potong (1 atau 0)
- * - Bawahan (Bottom) = berapa potong (1 atau 0)
- * - Gaun/Dress (One-piece) = berapa potong (1 atau 0)
+ * - Atasan (Top) = 1 piece (hanya tanktop/kaos), 2 piece jika dilapisi jaket/cardigan/outerwear
+ * - Bawahan (Bottom) = 1 piece (celana jeans, hotpants, rok, dll.)
+ * - Gaun/Dress (One-piece) = 1 piece
  */
 export const extractGarmentParts = (outfitStr: string): GarmentBreakdown => {
   if (!outfitStr) {
@@ -1407,7 +1420,7 @@ export const extractGarmentParts = (outfitStr: string): GarmentBreakdown => {
     const p2 = splitMatch[1].trim();
 
     const isP1Bottom = /\b(?:shorts|pants|jeans|skirt|hotpants|panties|trousers|celana|rok)\b/i.test(p1);
-    const isP2Top = /\b(?:top|shirt|t-shirt|crop top|tanktop|bra|blouse|sweater|hoodie|kaos|baju|kutang|bh)\b/i.test(p2);
+    const isP2Top = /\b(?:top|shirt|t-shirt|crop top|tanktop|bra|blouse|sweater|hoodie|kaos|baju|kutang|bh|jaket|jacket|cardigan|kardigan|outer)\b/i.test(p2);
 
     if (isP1Bottom || isP2Top) {
       topGarment = p2;
@@ -1417,22 +1430,28 @@ export const extractGarmentParts = (outfitStr: string): GarmentBreakdown => {
       bottomGarment = p2;
     }
   } else {
-    const topMatch = clean.match(/\b[^,.]*?(?:top|shirt|t-shirt|crop top|tanktop|bra|blouse|sweater|hoodie|kaos|baju|kutang|bh)[^,.]*?/i);
+    const topMatch = clean.match(/\b[^,.]*?(?:top|shirt|t-shirt|crop top|tanktop|bra|blouse|sweater|hoodie|kaos|baju|kutang|bh|jaket|jacket|cardigan|kardigan|outer)[^,.]*?/i);
     const bottomMatch = clean.match(/\b[^,.]*?(?:shorts|pants|jeans|skirt|hotpants|panties|trousers|celana|rok)[^,.]*?/i);
 
     topGarment = topMatch ? topMatch[0].trim() : "";
     bottomGarment = bottomMatch ? bottomMatch[0].trim() : "";
   }
 
-  const topCount = topGarment ? 1 : 0;
+  // Deteksi Atasan 1 piece vs 2 piece jika dilapisi jaket/cardigan/outerwear
+  const topLow = (topGarment || clean).toLowerCase();
+  const hasLayeredOuter = /\b(?:jaket|jacket|cardigan|kardigan|blazer|coat|outer|hoodie|vest|rompi)\b/i.test(topLow);
+  const hasInnerTop = /\b(?:tanktop|tank\s+top|crop\s+top|croptop|kaos|t-shirt|tshirt|shirt|kemeja|blouse|bra|bh|kutang)\b/i.test(topLow);
+  const topCount = (hasLayeredOuter && hasInnerTop) ? 2 : (topGarment ? 1 : 0);
   const bottomCount = bottomGarment ? 1 : 0;
   const totalWornPieces = topCount + bottomCount;
 
   let summaryText = "";
-  if (totalWornPieces === 2) {
+  if (topCount === 2 && bottomCount === 1) {
+    summaryText = `3-piece set (2 Atasan dilapisi outer: ${topGarment}, 1 Bawahan: ${bottomGarment})`;
+  } else if (totalWornPieces === 2) {
     summaryText = `2-piece set (1 Atasan: ${topGarment}, 1 Bawahan: ${bottomGarment})`;
-  } else if (topCount === 1) {
-    summaryText = `1-piece Atasan (${topGarment})`;
+  } else if (topCount > 0) {
+    summaryText = `${topCount}-piece Atasan (${topGarment})`;
   } else if (bottomCount === 1) {
     summaryText = `1-piece Bawahan (${bottomGarment})`;
   } else {
@@ -1549,16 +1568,10 @@ export const analyzePreviousPapImage = async (
   outfitHint?: string, 
   userProfile?: UserProfile,
   onStatusUpdate?: (msg: string) => void
-): Promise<{ outfitPrompt: string; roomPrompt: string; placementSurface: string; isNude: boolean }> => {
+): Promise<PreviousPapAnalysis> => {
   const cacheKey = `${imageBase64.length}_${imageBase64.slice(0, 100)}`;
   if (previousPapAnalysisCache.has(cacheKey)) {
-    const cached = previousPapAnalysisCache.get(cacheKey)!;
-    return {
-      outfitPrompt: cached.outfitPrompt,
-      roomPrompt: cached.roomPrompt,
-      placementSurface: cached.placementSurface || derivePlacementSurface(cached.roomPrompt),
-      isNude: cached.isNude
-    };
+    return previousPapAnalysisCache.get(cacheKey)!;
   }
 
   try {
@@ -1574,11 +1587,17 @@ export const analyzePreviousPapImage = async (
             role: 'user',
             parts: [
               {
-                text: `Analyze this image with 100% forensic precision. Return a strict valid JSON object with EXACTLY four fields:
-1. "outfitPrompt": Describe ONLY the exact clothes she/he is wearing in this image. Include exact primary color(s), fabric(s), textures, motif, corak, and garment type (e.g. "a white sleeveless ribbed crop top and one pair of light blue denim jeans"). STRICT QUANTITY RULE: Describe each garment as strictly ONE single piece or item (e.g., "one white crop top" or "one pair of light blue denim jeans"). NEVER include words like "2-piece", "two-piece", or plural duplicate counts in outfitPrompt. DO NOT comment on her/his pose, face, body, or background. If she is already completely unclothed/naked/topless/bare skin, output strictly "unclothed, natural bare skin".
-2. "roomPrompt": Describe ONLY the room interior/location setting: environment, background, bed, sheets, headboard, wall colors, lighting, or outdoor landscape (e.g. "an intimate bedroom with warm bedside lamp lighting" or "a tropical sunny beach with white sand and blue ocean waves"). DO NOT mention the person or clothes.
-3. "placementSurface": Suggest the most logical, natural nearby surface or spot in THIS SPECIFIC environment where removed clothes would be set aside (e.g. "on one corner of the bed frame", "on a nearby chair", "on a beach towel on the sand", "on a lounge chair by the pool", "on a sofa", "on the side table").
-4. "isNude": A boolean (true if she is completely undressed, topless, or unclothed; false if she is wearing regular clothes).
+                text: `Analyze this image with 100% forensic precision. Return a strict valid JSON object with the following fields:
+1. "topGarment": Describe ONLY the upper body clothing (atasan). State exact primary color, fabric texture, cut, and whether it is 1 single piece (e.g. "one white ribbed tank top") or 2 pieces if layered with jacket/cardigan/outerwear (e.g. "one white tank top layered under one blue denim jacket"). If wearing a one-piece dress or unclothed, output empty string "".
+2. "topCount": Integer representing the exact piece count of the top clothing: 1 if single piece (e.g. tank top only), 2 if layered (e.g. tank top layered with jacket/cardigan), or 0 if none/dress.
+3. "bottomGarment": Describe ONLY the lower body clothing (bawahan), strictly 1 piece (e.g. "one pair of blue denim shorts", "one light blue denim jeans", "one black pleated mini skirt"). If wearing a one-piece dress or unclothed, output empty string "".
+4. "bottomCount": Integer (1 if wearing bottom shorts/pants/skirt, or 0 if none/dress).
+5. "isDress": Boolean (true if wearing a 1-piece dress, daster, jumpsuit, or gown; false otherwise).
+6. "dressGarment": Describe the one-piece dress/daster/gown if isDress is true, otherwise empty string "".
+7. "outfitPrompt": Describe the full complete outfit combining the garments above (e.g. "one white tank top and one pair of blue denim shorts"). If unclothed/naked, output "unclothed, natural bare skin".
+8. "roomPrompt": Describe ONLY the room interior/location setting: environment, background, bed, sheets, headboard, wall colors, lighting, or outdoor landscape (e.g. "an intimate bedroom with warm bedside lamp lighting" or "a modern bedroom with a tidy bed and white sheets"). DO NOT mention the person or clothes.
+9. "placementSurface": Suggest the exact most logical, natural nearby surface or furniture in THIS SPECIFIC environment where removed/discarded clothes would be set aside (e.g. "on one corner of the bed frame", "on the nearby wooden chair", "on the nightstand table", "on one side of the sofa", "on a beach towel on the sand").
+10. "isNude": Boolean (true if she/he is completely undressed, topless, or unclothed; false if wearing regular clothes).
 
 Return ONLY raw JSON, with no markdown code fences or backticks.`
               },
@@ -1598,18 +1617,31 @@ Return ONLY raw JSON, with no markdown code fences or backticks.`
       const text = response.text || '';
       const cleanedJson = text.replace(/```json/gi, '').replace(/```/g, '').trim();
       const parsed = JSON.parse(cleanedJson);
+      
       const rawOutfit = typeof parsed.outfitPrompt === 'string' && parsed.outfitPrompt.trim()
         ? parsed.outfitPrompt.trim()
         : cleanRawCaptionToPureGarment(outfitHint || '');
       const outfitPrompt = cleanRawCaptionToPureGarment(rawOutfit);
       const roomPrompt = typeof parsed.roomPrompt === 'string' && parsed.roomPrompt.trim() ? parsed.roomPrompt.trim() : 'identical environment setting';
       const placementSurface = typeof parsed.placementSurface === 'string' && parsed.placementSurface.trim() ? parsed.placementSurface.trim() : derivePlacementSurface(roomPrompt);
+      const isDress = !!parsed.isDress;
+      const dressGarment = typeof parsed.dressGarment === 'string' ? parsed.dressGarment.trim() : '';
+      const topGarment = typeof parsed.topGarment === 'string' ? parsed.topGarment.trim() : '';
+      const topCount = typeof parsed.topCount === 'number' ? parsed.topCount : (topGarment ? 1 : 0);
+      const bottomGarment = typeof parsed.bottomGarment === 'string' ? parsed.bottomGarment.trim() : '';
+      const bottomCount = typeof parsed.bottomCount === 'number' ? parsed.bottomCount : (bottomGarment ? 1 : 0);
 
       return {
         outfitPrompt,
         roomPrompt,
         placementSurface,
-        isNude: !!parsed.isNude
+        isNude: !!parsed.isNude,
+        topGarment,
+        topCount,
+        bottomGarment,
+        bottomCount,
+        isDress,
+        dressGarment
       };
     }, userProfile, onStatusUpdate);
 
@@ -1620,11 +1652,18 @@ Return ONLY raw JSON, with no markdown code fences or backticks.`
     const isNude = (outfitHint || '').toLowerCase().includes('nude') || (outfitHint || '').toLowerCase().includes('naked') || (outfitHint || '').toLowerCase().includes('telanjang');
     const fallbackOutfit = cleanRawCaptionToPureGarment(outfitHint || 'her/his previous outfit');
     const fallbackRoom = 'identical environment setting';
-    const fallback = {
+    const fallbackGarment = extractGarmentParts(fallbackOutfit);
+    const fallback: PreviousPapAnalysis = {
       outfitPrompt: fallbackOutfit,
       roomPrompt: fallbackRoom,
       placementSurface: derivePlacementSurface(fallbackRoom),
-      isNude
+      isNude,
+      topGarment: fallbackGarment.topGarment,
+      topCount: fallbackGarment.topCount,
+      bottomGarment: fallbackGarment.bottomGarment,
+      bottomCount: fallbackGarment.bottomCount,
+      isDress: fallbackGarment.isDress,
+      dressGarment: fallbackGarment.dressGarment
     };
     return fallback;
   }
@@ -2165,7 +2204,7 @@ export const generatePAP = async (
   const isExplicitOutfitChange = !isExplicitUndress && (outfitChangeRegex.test(lowCaption) || outfitChangeKeywords.some(kw => lowCaption.includes(kw)));
 
   // 1. Analisa PAP sebelumnya (Pakaian murni & Ruangan murni) atau siapkan First PAP Context
-  let previousPapAnalysis: { outfitPrompt: string; roomPrompt: string; placementSurface?: string; isNude: boolean } | null = null;
+  let previousPapAnalysis: PreviousPapAnalysis | null = null;
   if (hasPreviousPap && latestPap?.image) {
     onStatusUpdate?.("Menganalisa pakaian dan ruangan dari PAP sebelumnya...");
     previousPapAnalysis = await analyzePreviousPapImage(latestPap.image, latestPap.outfit, effectiveUserProfile, onStatusUpdate);
@@ -2197,8 +2236,22 @@ export const generatePAP = async (
   const previousOutfitHint = analyzedOutfit ? ` (Outfit: ${analyzedOutfit})` : '';
 
   // Deteksi Granular Kategori Undress (Bottom-Only, Top-Only, atau Full Undress)
-  const bottomUndressKeywords = ['buka celana', 'lepas celana', 'copot celana', 'buka rok', 'lepas rok', 'tanpa celana', 'tanpa rok', 'bottomless', 'buka cd', 'lepas cd', 'tanpa cd', 'gapake celana', 'gak pake celana', 'nggak pake celana', 'ga pake celana'];
-  const topUndressKeywords = ['buka baju', 'lepas baju', 'copot baju', 'buka kaos', 'lepas kaos', 'buka bra', 'lepas bra', 'buka bh', 'lepas bh', 'topless', 'tanpa baju', 'tanpa kaos', 'tanpa bra', 'tanpa bh', 'gapake baju', 'gak pake baju', 'nggak pake baju', 'ga pake baju'];
+  const bottomUndressKeywords = [
+    'buka celana', 'lepas celana', 'copot celana', 'turunkan celana', 'turunin celana', 'tarik celana',
+    'buka rok', 'lepas rok', 'copot rok', 'tanpa celana', 'tanpa rok', 'bottomless',
+    'buka cd', 'lepas cd', 'copot cd', 'tanpa cd', 'buka celana dalam', 'lepas celana dalam',
+    'gapake celana', 'gak pake celana', 'nggak pake celana', 'ga pake celana', 'tidak pakai celana',
+    'take off pants', 'remove pants', 'remove shorts', 'take off shorts', 'remove skirt', 'take off skirt'
+  ];
+  const topUndressKeywords = [
+    'buka baju', 'lepas baju', 'copot baju', 'buka kaos', 'lepas kaos', 'copot kaos',
+    'buka atasan', 'lepas atasan', 'copot atasan', 'buka kemeja', 'lepas kemeja', 'copot kemeja',
+    'buka tanktop', 'lepas tanktop', 'copot tanktop', 'buka crop top', 'lepas crop top',
+    'buka bra', 'lepas bra', 'copot bra', 'buka bh', 'lepas bh', 'copot bh', 'topless',
+    'tanpa baju', 'tanpa kaos', 'tanpa atasan', 'tanpa bra', 'tanpa bh',
+    'gapake baju', 'gak pake baju', 'nggak pake baju', 'ga pake baju', 'tidak pakai baju',
+    'take off shirt', 'remove shirt', 'take off top', 'remove top', 'remove bra', 'take off bra'
+  ];
 
   const lowUserMsg = lastUserMsg.toLowerCase();
   const isUserBottomUndress = bottomUndressKeywords.some(kw => lowUserMsg.includes(kw));
@@ -2213,16 +2266,20 @@ export const generatePAP = async (
   } else if (isUserTopUndress && !isUserBottomUndress && !isUserFullUndress) {
     isTopOnlyUndress = true;
   } else {
-    isBottomOnlyUndress = isExplicitUndress && bottomUndressKeywords.some(kw => combinedTextForCheck.includes(kw)) && !topUndressKeywords.some(kw => combinedTextForCheck.includes(kw)) && !combinedTextForCheck.includes('semua') && !combinedTextForCheck.includes('telanjang');
-    isTopOnlyUndress = isExplicitUndress && topUndressKeywords.some(kw => combinedTextForCheck.includes(kw)) && !bottomUndressKeywords.some(kw => combinedTextForCheck.includes(kw)) && !combinedTextForCheck.includes('semua') && !combinedTextForCheck.includes('telanjang');
+    isBottomOnlyUndress = isExplicitUndress && bottomUndressKeywords.some(kw => combinedTextForCheck.includes(kw)) && !topUndressKeywords.some(kw => combinedTextForCheck.includes(kw)) && !combinedTextForCheck.includes('semua') && !combinedTextForCheck.includes('telanjang') && !combinedTextForCheck.includes('bugil');
+    isTopOnlyUndress = isExplicitUndress && topUndressKeywords.some(kw => combinedTextForCheck.includes(kw)) && !bottomUndressKeywords.some(kw => combinedTextForCheck.includes(kw)) && !combinedTextForCheck.includes('semua') && !combinedTextForCheck.includes('telanjang') && !combinedTextForCheck.includes('bugil');
   }
 
   const isFullUndress = isExplicitUndress && !isBottomOnlyUndress && !isTopOnlyUndress;
 
-  const garmentBreakdown = extractGarmentParts(analyzedOutfit);
-  const topGarment = garmentBreakdown.topGarment;
-  const bottomGarment = garmentBreakdown.bottomGarment;
-  const dressGarment = garmentBreakdown.dressGarment;
+  // Garment breakdown dari AI Vision (jika tersedia) atau fallback ekstraksi teks
+  const fallbackBreakdown = extractGarmentParts(analyzedOutfit);
+  const isDress = previousPapAnalysis?.isDress ?? fallbackBreakdown.isDress;
+  const dressGarment = (previousPapAnalysis?.dressGarment && previousPapAnalysis.dressGarment.trim()) || fallbackBreakdown.dressGarment;
+  const topGarment = (previousPapAnalysis?.topGarment && previousPapAnalysis.topGarment.trim()) || fallbackBreakdown.topGarment;
+  const topCount = (previousPapAnalysis?.topCount && previousPapAnalysis.topCount > 0) ? previousPapAnalysis.topCount : fallbackBreakdown.topCount;
+  const bottomGarment = (previousPapAnalysis?.bottomGarment && previousPapAnalysis.bottomGarment.trim()) || fallbackBreakdown.bottomGarment;
+  const bottomCount = (previousPapAnalysis?.bottomCount && previousPapAnalysis.bottomCount > 0) ? previousPapAnalysis.bottomCount : fallbackBreakdown.bottomCount;
 
   // Deteksi permintaan meniru pose dari gambar yang diunggah user
   const poseKeywords = [
@@ -2271,11 +2328,41 @@ export const generatePAP = async (
 
   let UNDRESS_PROMPT = "";
   if (isBottomOnlyUndress) {
-    UNDRESS_PROMPT = `PARTIAL UNDRESS (BOTTOMLESS ONLY): Character 1 is wearing her top (${topGarment}) on her torso. Her hips and legs are natural bare skin. Scene details: ${englishCaption}`;
+    if (isDress) {
+      const dressRemovalClause = isHandledInitially
+        ? `${agentPossessive} removed 1-piece dress (${dressGarment}) is held in ${agentPossessive} hand`
+        : `${agentPossessive} discarded ${dressGarment} (1 piece) is neatly placed ${placementSpot}`;
+      UNDRESS_PROMPT = `PARTIAL UNDRESS (BOTTOM REMOVED): Character 1 has pulled up or removed ${agentPossessive} 1-piece dress (${dressGarment}). ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} hips and legs are natural bare skin. ${dressRemovalClause}. Scene details: ${englishCaption}`;
+    } else {
+      const discardedBottomClause = isHandledInitially
+        ? `${agentPossessive} removed ${bottomGarment} (1 piece) is held in ${agentPossessive} hand`
+        : `${agentPossessive} discarded ${bottomGarment} (1 piece) is neatly placed ${placementSpot}`;
+      UNDRESS_PROMPT = `PARTIAL UNDRESS (BOTTOMLESS ONLY): Character 1 is wearing ${agentPossessive} top (${topGarment}) on ${agentPossessive} upper body. ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} hips and legs are natural bare skin. ${discardedBottomClause}. Scene details: ${englishCaption}`;
+    }
   } else if (isTopOnlyUndress) {
-    UNDRESS_PROMPT = `PARTIAL UNDRESS (TOPLESS ONLY): Character 1 is wearing her bottom (${bottomGarment}) on her lower body. Her chest and torso are natural bare skin. Scene details: ${englishCaption}`;
+    if (isDress) {
+      const dressRemovalClause = isHandledInitially
+        ? `${agentPossessive} removed 1-piece dress (${dressGarment}) is held in ${agentPossessive} hand`
+        : `${agentPossessive} discarded ${dressGarment} (1 piece) is neatly placed ${placementSpot}`;
+      UNDRESS_PROMPT = `PARTIAL UNDRESS (TOPLESS ONLY): Character 1 has unbuttoned or pulled down ${agentPossessive} 1-piece dress (${dressGarment}). ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} chest and torso are natural bare skin. ${dressRemovalClause}. Scene details: ${englishCaption}`;
+    } else {
+      const topPieceText = topCount > 1 ? `${topCount} pieces` : '1 piece';
+      const discardedTopClause = isHandledInitially
+        ? `${agentPossessive} removed ${topGarment} (${topPieceText}) is held in ${agentPossessive} hand`
+        : `${agentPossessive} discarded ${topGarment} (${topPieceText}) is neatly placed ${placementSpot}`;
+      UNDRESS_PROMPT = `PARTIAL UNDRESS (TOPLESS ONLY): Character 1 is wearing ${agentPossessive} bottom (${bottomGarment}) on ${agentPossessive} lower body. ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} chest and torso are natural bare skin. ${discardedTopClause}. Scene details: ${englishCaption}`;
+    }
   } else {
-    UNDRESS_PROMPT = `FULL UNDRESS: Character 1 is completely undressed (100% natural bare skin). Scene details: ${englishCaption}`;
+    let discardedFullClause = "";
+    if (isHandledInitially) {
+      discardedFullClause = `${agentPossessive} removed outfit is held in ${agentPossessive} hand`;
+    } else if (isDress) {
+      discardedFullClause = `${agentPossessive} discarded ${dressGarment} (1 piece) is neatly placed ${placementSpot}`;
+    } else {
+      const topPieceText = topCount > 1 ? `${topCount} pieces` : '1 piece';
+      discardedFullClause = `${agentPossessive} discarded ${topGarment} (${topPieceText}) and discarded ${bottomGarment} (1 piece) are neatly placed ${placementSpot}`;
+    }
+    UNDRESS_PROMPT = `FULL UNDRESS: Character 1 is completely undressed (100% natural bare skin). ${discardedFullClause}. Scene details: ${englishCaption}`;
   }
 
   // Referensi outfit lama HANYA dilanjutkan jika user meminta PAP lanjutan tanpa perintah lepas baju atau ganti pakaian baru
@@ -2361,12 +2448,20 @@ ${identityNote}` });
         onStatusUpdate?.("Menyiapkan Image 2 (PAP Sebelumnya)...", { slot: 2, label: "Image 2: PAP Sebelumnya (Kontinuitas)", url: latestPap.image });
         if (isExplicitUndress) {
           if (!isPreviousPapNude) {
+            const undressDetails = isBottomOnlyUndress
+              ? `Character 1 is removing ONLY ${agentPossessive} bottom (${bottomGarment}, 1 piece) and still wearing ${agentPossessive} top (${topGarment}, ${topCount} piece${topCount > 1 ? 's' : ''}). ${placementSpot.charAt(0).toUpperCase() + placementSpot.slice(1)} lies strictly only that exact removed 1 piece: ${bottomGarment}.`
+              : (isTopOnlyUndress
+                  ? `Character 1 is removing ONLY ${agentPossessive} top (${topGarment}, ${topCount} piece${topCount > 1 ? 's' : ''}) and still wearing ${agentPossessive} bottom (${bottomGarment}, 1 piece). ${placementSpot.charAt(0).toUpperCase() + placementSpot.slice(1)} lies strictly only that exact removed ${topCount > 1 ? topCount + ' pieces' : '1 piece'}: ${topGarment}.`
+                  : (isDress
+                      ? `Character 1 has removed ${agentPossessive} 1-piece dress (${dressGarment}). ${placementSpot.charAt(0).toUpperCase() + placementSpot.slice(1)} lies strictly only that exact 1-piece dress: ${dressGarment}.`
+                      : `${placementSpot.charAt(0).toUpperCase() + placementSpot.slice(1)} lies strictly only that exact previous outfit (${topGarment} [${topCount} piece${topCount > 1 ? 's' : ''}] and ${bottomGarment} [1 piece]) as compact realistic garments.`));
+
             translatorParts.push({ text: `REFERENCE IMAGE 2 (PREVIOUS PAP - EXACT SAME LOCATION CONTINUITY & DISCARDED OUTFIT REFERENCE):
 1. EXACT SAME LOCATION CONTINUITY: Retain the EXACT SAME LOCATION/SETTING with previous PAP (${analyzedRoom}).
 2. DISCARDED CLOTHES SOURCE & PLACEMENT RULE:
    - Reference Image 2 is the ONLY image to examine for discarded clothes. NEVER look at Image 1 (Profile Pic) for discarded clothes!
    - In Reference Image 2, Character 1 was wearing: ${analyzedOutfit}.
-   - ${placementSpot.charAt(0).toUpperCase() + placementSpot.slice(1)} lies strictly only that exact outfit (${analyzedOutfit}) as 1 or 2 neat pieces of cloth with matching colors.
+   - ${undressDetails}
    - ABSOLUTE STRICT SOURCE RULE: The discarded clothes MUST be the outfit from Reference Image 2 (${analyzedOutfit}). Absolutely NEVER use or describe the clothes from Reference Image 1 (Profile Pic)!
    - CRITICAL SAFETY: The discarded clothes are strictly inanimate garments/fabric ONLY. Do NOT copy or clone any human body or person from Reference Image 2 into the background.` });
           } else {
@@ -2487,60 +2582,62 @@ Retain the EXACT SAME LOCATION/SETTING with previous PAP (${analyzedRoom}). Char
     let outfitTransitionInstruction = "";
     if (isEffectiveUndress) {
       if (isBottomOnlyUndress) {
-        if (garmentBreakdown.isDress) {
+        if (isDress) {
           outfitTransitionInstruction = `
           - OUTFIT TRANSITION (PARTIAL UNDRESS - 1-PIECE DRESS REMOVAL):
-            * The user requested to remove bottom/dress: "${rawCaption}".
-            * Character 1 has pulled up or removed her 1-piece dress (${dressGarment}). Her hips, waist, and legs are bare skin.
-            ${isHandledInitially ? `* SINGLE GARMENT ACTION: Her removed ${dressGarment} is held or set aside directly in her hands/action. DO NOT place any second copy of ${dressGarment} on the bed.
-            * PRISTINE BED: The bed, mattress, and sheets are completely flat, clean, and smooth with zero stray clothes.` : `* MICRO-COMPACT ANCHORING: Her discarded ${dressGarment} 1 piece is placed on ${placementSpot}. Compact realistic garment size, zero oversized or sprawling cloth.
-            * PRISTINE BED: The rest of the mattress and sheets are clean and flat with zero stray cloth.`}`;
+            * USER INTENT: The user requested to remove bottom/dress: "${rawCaption}".
+            * Character 1 has pulled up or removed ${agentPossessive} 1-piece dress (${dressGarment}). ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} hips, waist, and legs are natural bare skin.
+            ${isHandledInitially ? `* SINGLE GARMENT ACTION: ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} removed ${dressGarment} (1 piece) is held or set aside directly in ${agentPossessive} hands/action. DO NOT place any second copy of ${dressGarment} on the surface.
+            * PRISTINE SURROUNDINGS: The setting is completely flat, clean, and smooth with zero stray clothes.` : `* MICRO-COMPACT ANCHORING: ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} discarded ${dressGarment} (1 piece) is placed ${placementSpot}. Compact realistic garment size, zero oversized or sprawling cloth.
+            * PRISTINE SURROUNDINGS: The rest of the setting, mattress, and sheets are clean and flat with zero stray cloth.`}`;
         } else {
           outfitTransitionInstruction = `
           - OUTFIT TRANSITION (PARTIAL UNDRESS - BOTTOMLESS ONLY / 1 PIECE REMOVED):
-            * Initial outfit breakdown: Total 2 pieces (1 Atasan: ${topGarment}, 1 Bawahan: ${bottomGarment}).
-            * The user requested to remove ONLY bottom garment (${bottomGarment}): "${rawCaption}".
-            * WORN GARMENT ON BODY: Character 1 is STILL WEARING her exact Atasan (${topGarment}) on her upper body/torso. Her hips and legs are bare skin (bottomless).
-            ${isHandledInitially ? `* SINGLE GARMENT ACTION: Her removed pair of ${bottomGarment} is held or set aside directly in her hands/action. DO NOT render a second copy of ${bottomGarment} on the bed.
-            * PRISTINE BED: The mattress and bedsheets are completely smooth, flat, and clean. ZERO duplicate garments, ZERO clothing piles, ZERO stray fabric on bed.` : `* MICRO-COMPACT ANCHORING: Her discarded ${bottomGarment} 1 piece is placed on ${placementSpot}. Compact realistic garment size.
-            * PRISTINE BED: The mattress and bedsheets are completely smooth, flat, and clean. ZERO duplicate garments, ZERO cloth on the opposite side of the bed, ZERO clothing piles, ZERO stray fabric.`}`;
+            * Initial outfit breakdown: Total ${topCount + 1} pieces (${topCount} Atasan: ${topGarment}, 1 Bawahan: ${bottomGarment}).
+            * USER INTENT: The user requested to remove ONLY bottom garment (${bottomGarment}): "${rawCaption}".
+            * WORN GARMENT ON BODY: Character 1 is STILL WEARING ${agentPossessive} exact Atasan (${topGarment}, ${topCount} piece${topCount > 1 ? 's' : ''}) on ${agentPossessive} upper body/torso. ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} hips and legs are natural bare skin (bottomless).
+            ${isHandledInitially ? `* SINGLE GARMENT ACTION: ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} removed ${bottomGarment} (1 piece) is held or set aside directly in ${agentPossessive} hands/action. DO NOT render a second copy of ${bottomGarment} on the surface.
+            * PRISTINE SURROUNDINGS: The mattress, floor, and furniture are completely smooth, flat, and clean. ZERO duplicate garments, ZERO clothing piles, ZERO stray fabric.` : `* MICRO-COMPACT ANCHORING: ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} discarded ${bottomGarment} (1 piece) is placed ${placementSpot}. Compact realistic garment size.
+            * PRISTINE SURROUNDINGS: The mattress, bedsheets, and surrounding area are completely smooth, flat, and clean. ZERO duplicate garments, ZERO cloth on the opposite side of the bed, ZERO clothing piles, ZERO stray fabric.`}`;
         }
       } else if (isTopOnlyUndress) {
-        if (garmentBreakdown.isDress) {
+        if (isDress) {
           outfitTransitionInstruction = `
           - OUTFIT TRANSITION (PARTIAL UNDRESS - 1-PIECE DRESS REMOVAL):
-            * The user requested to remove top/baju: "${rawCaption}".
-            * Character 1 has unbuttoned or pulled down her 1-piece dress (${dressGarment}). Her shoulders, chest, back, arms, neck, and upper body were bare skin.
-            ${isHandledInitially ? `* SINGLE GARMENT ACTION: Her removed ${dressGarment} is held or set aside directly in her hands/action. DO NOT place any second copy of ${dressGarment} on the bed.
-            * PRISTINE BED: The bed, mattress, and sheets are clean and flat with zero duplicate cloth.` : `* MICRO-COMPACT ANCHORING: Her discarded ${dressGarment} 1 piece is placed on ${placementSpot}. Compact realistic garment size, zero oversized or sprawling cloth.
-            * PRISTINE BED: The rest of the mattress and sheets are clean and flat with zero stray cloth.`}`;
+            * USER INTENT: The user requested to remove top/baju: "${rawCaption}".
+            * Character 1 has unbuttoned or pulled down ${agentPossessive} 1-piece dress (${dressGarment}). ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} shoulders, chest, back, arms, neck, and upper body were natural bare skin.
+            ${isHandledInitially ? `* SINGLE GARMENT ACTION: ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} removed ${dressGarment} (1 piece) is held or set aside directly in ${agentPossessive} hands/action. DO NOT place any second copy of ${dressGarment} on the surface.
+            * PRISTINE SURROUNDINGS: The bed, mattress, and sheets are clean and flat with zero duplicate cloth.` : `* MICRO-COMPACT ANCHORING: ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} discarded ${dressGarment} (1 piece) is placed ${placementSpot}. Compact realistic garment size, zero oversized or sprawling cloth.
+            * PRISTINE SURROUNDINGS: The rest of the mattress and sheets are clean and flat with zero stray cloth.`}`;
         } else {
           outfitTransitionInstruction = `
-          - OUTFIT TRANSITION (PARTIAL UNDRESS - TOPLESS ONLY / 1 PIECE REMOVED):
-            * Initial outfit breakdown: Total 2 pieces (1 Atasan: ${topGarment}, 1 Bawahan: ${bottomGarment}).
-            * The user requested to remove ONLY top garment (${topGarment}): "${rawCaption}".
-            * WORN GARMENT ON BODY: Character 1 is STILL WEARING her exact Bawahan (${bottomGarment}) on her lower body/hips. Her shoulders, chest, back, arms, neck, and upper body were bare skin. (topless).
-            ${isHandledInitially ? `* SINGLE GARMENT ACTION: Her removed ${topGarment} is held or set aside directly in her hands/action. DO NOT render a second copy of ${topGarment} on the bed.
-            * PRISTINE BED: The mattress and bedsheets are completely smooth, flat, and clean. ZERO duplicate garments, ZERO cloth on bed, ZERO clothing piles.` : `* MICRO-COMPACT ANCHORING: Her discarded ${topGarment} 1 piece is placed on ${placementSpot}. Compact realistic garment size.
-            * PRISTINE BED: The mattress and bedsheets are completely smooth, flat, and clean. ZERO duplicate garments, ZERO cloth on the opposite side of the bed, ZERO clothing piles, ZERO stray fabric.`}`;
+          - OUTFIT TRANSITION (PARTIAL UNDRESS - TOPLESS ONLY / ATASAN REMOVED):
+            * Initial outfit breakdown: Total ${topCount + 1} pieces (${topCount} Atasan: ${topGarment}, 1 Bawahan: ${bottomGarment}).
+            * USER INTENT: The user requested to remove ONLY top garment (${topGarment}): "${rawCaption}".
+            * WORN GARMENT ON BODY: Character 1 is STILL WEARING ${agentPossessive} exact Bawahan (${bottomGarment}, 1 piece) on ${agentPossessive} lower body/hips. ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} shoulders, chest, back, arms, neck, and upper body were natural bare skin (topless).
+            ${isHandledInitially ? `* SINGLE GARMENT ACTION: ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} removed ${topGarment} (${topCount} piece${topCount > 1 ? 's' : ''}) is held or set aside directly in ${agentPossessive} hands/action. DO NOT render a second copy of ${topGarment} on the surface.
+            * PRISTINE SURROUNDINGS: The mattress and surrounding area are completely smooth, flat, and clean. ZERO duplicate garments, ZERO cloth on bed, ZERO clothing piles.` : `* MICRO-COMPACT ANCHORING: ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} discarded ${topGarment} (${topCount} piece${topCount > 1 ? 's' : ''}) is placed ${placementSpot}. Compact realistic garment size.
+            * PRISTINE SURROUNDINGS: The mattress, bedsheets, and surrounding area are completely smooth, flat, and clean. ZERO duplicate garments, ZERO cloth on the opposite side of the bed, ZERO clothing piles, ZERO stray fabric.`}`;
         }
       } else {
-        if (garmentBreakdown.isDress) {
+        if (isDress) {
           outfitTransitionInstruction = `
           - OUTFIT TRANSITION (FULL UNDRESS FROM 1-PIECE DRESS):
-            * Character 1 is COMPLETELY UNDRESSED with zero clothing at all on her body (100% natural bare skin).
+            * USER INTENT: Full undress / remove all clothes: "${rawCaption}".
+            * Character 1 is COMPLETELY UNDRESSED with zero clothing at all on ${agentPossessive} body (100% natural bare skin).
             * EXACT SAME ROOM WITH PREVIOUS PAP: The setting MUST be the EXACT SAME ROOM as Reference Image 2 (${analyzedRoom}).
-            ${isHandledInitially ? `* SINGLE GARMENT ACTION: Her removed 1-piece dress (${dressGarment}) is held or set aside directly in her hands/action. DO NOT place any second copy of this dress on the bed.
-            * PRISTINE BED: The mattress and sheets are smooth, flat, and completely clean with zero loose fabric and zero duplicate garments.` : `* MICRO-COMPACT ANCHORING: Her discarded ${dressGarment} 1 piece is placed on ${placementSpot}. Authentic storytelling prop.
-            * PRISTINE BED: The rest of the mattress and sheets are smooth, flat, and completely clean with zero loose fabric and zero laundry piles.`}`;
+            ${isHandledInitially ? `* SINGLE GARMENT ACTION: ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} removed 1-piece dress (${dressGarment}) is held or set aside directly in ${agentPossessive} hands/action. DO NOT place any second copy of this dress on the bed.
+            * PRISTINE SURROUNDINGS: The mattress and sheets are smooth, flat, and completely clean with zero loose fabric and zero duplicate garments.` : `* MICRO-COMPACT ANCHORING: ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} discarded ${dressGarment} (1 piece) is placed ${placementSpot}. Authentic storytelling prop.
+            * PRISTINE SURROUNDINGS: The rest of the mattress and sheets are smooth, flat, and completely clean with zero loose fabric and zero laundry piles.`}`;
         } else {
           outfitTransitionInstruction = `
-          - OUTFIT TRANSITION (FULL UNDRESS FROM 2-PIECE OUTFIT):
-            * Character 1 is COMPLETELY UNDRESSED with zero clothing at all on her body (100% natural bare skin).
+          - OUTFIT TRANSITION (FULL UNDRESS FROM 2-PIECE/MULTI-PIECE OUTFIT):
+            * USER INTENT: Full undress / remove all clothes: "${rawCaption}".
+            * Character 1 is COMPLETELY UNDRESSED with zero clothing at all on ${agentPossessive} body (100% natural bare skin).
             * EXACT SAME ROOM WITH PREVIOUS PAP: The setting MUST be the EXACT SAME ROOM as Reference Image 2 (${analyzedRoom}).
-            ${isHandledInitially ? `* SINGLE GARMENT ACTION: Her removed outfit is held or set aside directly in her hands/action. DO NOT render a second copy of this outfit on the bed.
-            * PRISTINE BED: The mattress and sheets are flat, smooth, and clean. ZERO duplicate garments, ZERO cloth on the bed, ZERO loose fabric, ZERO scattered laundry piles.` : `* MICRO-COMPACT ANCHORING: Her discarded ${topGarment} 1 piece and ${bottomGarment} 1 piece are placed on ${placementSpot}. Compact realistic size, authentic storytelling prop.
-            * PRISTINE BED: The rest of the mattress and sheets are flat, smooth, and clean. ZERO duplicate garments, ZERO cloth on the opposite side of the bed, ZERO loose fabric, ZERO scattered laundry piles.`}`;
+            ${isHandledInitially ? `* SINGLE GARMENT ACTION: ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} removed outfit is held or set aside directly in ${agentPossessive} hands/action. DO NOT render a second copy of this outfit on the surface.
+            * PRISTINE SURROUNDINGS: The mattress and sheets are flat, smooth, and clean. ZERO duplicate garments, ZERO cloth on the bed, ZERO loose fabric, ZERO scattered laundry piles.` : `* MICRO-COMPACT ANCHORING: ${agentPossessive.charAt(0).toUpperCase() + agentPossessive.slice(1)} discarded ${topGarment} (${topCount} piece${topCount > 1 ? 's' : ''}) and discarded ${bottomGarment} (1 piece) are placed ${placementSpot}. Compact realistic size, authentic storytelling prop.
+            * PRISTINE SURROUNDINGS: The rest of the mattress and sheets are flat, smooth, and clean. ZERO duplicate garments, ZERO cloth on the opposite side of the bed, ZERO loose fabric, ZERO scattered laundry piles.`}`;
         }
       }
     } else if (isExplicitOutfitChange) {
@@ -2611,13 +2708,21 @@ Retain the EXACT SAME LOCATION/SETTING with previous PAP (${analyzedRoom}). Char
          - The room and background environment MUST strictly be determined by the ongoing conversation context and previous PAP session (${analyzedRoom}), NEVER by Image 1 (Profile Pic).
          ${hasPreviousPap 
            ? `- MICRO-COMPACT ANCHORING FOR DISCARDED CLOTHES:
-              * Authentic Storytelling Prop: The discarded garments from ${papSlotUpper} serve as a discreet, authentic prop in the scene (like editorial erotic / MetArt photo sets).
-              * COMPACT SCALE CONSTRAINT: Describe the removed item strictly as a small,  compact bundle (e.g., "one small,  pair of [Color] [Garment Type]" or "small folded bundle"). NEVER use loose words like "cloth" or "fabric" which cause the AI to render sprawling blankets or giant dresses!
-              * SINGLE ANCHOR LOCATION: Anchor it strictly to ONE single spot on the far corner of the bed frame or nightstand. ZERO cloth on the opposite side of the bed.
+              * Authentic Storytelling Prop: The discarded garments from ${papSlotUpper} serve as a discreet, authentic prop in the scene (like editorial candid photo sets).
+              * USER INTENT & PRECISE DISCARDED PLACEMENT:
+                ${isBottomOnlyUndress 
+                  ? `- User intent: Remove bottom garment only (bottomless). Character 1's discarded ${bottomGarment} (1 piece) MUST be placed ${placementSpot}. Character 1 MUST still wear ${agentPossessive} top (${topGarment}, ${topCount} piece${topCount > 1 ? 's' : ''}) on ${agentPossessive} upper body.`
+                  : isTopOnlyUndress
+                    ? `- User intent: Remove top garment only (topless). Character 1's discarded ${topGarment} (${topCount} piece${topCount > 1 ? 's' : ''}) MUST be placed ${placementSpot}. Character 1 MUST still wear ${agentPossessive} bottom (${bottomGarment}, 1 piece) on ${agentPossessive} lower body.`
+                    : isDress
+                      ? `- User intent: Full undress. Character 1's discarded ${dressGarment} (1 piece) MUST be placed ${placementSpot}. Character 1 is completely unclothed (100% natural bare skin).`
+                      : `- User intent: Full undress. Character 1's discarded ${topGarment} (${topCount} piece${topCount > 1 ? 's' : ''}) and discarded ${bottomGarment} (1 piece) MUST be placed ${placementSpot}. Character 1 is completely unclothed (100% natural bare skin).`}
+              * COMPACT SCALE CONSTRAINT: Describe the removed item strictly as a small, compact bundle (e.g., "one small, compact pair of ${bottomGarment || 'shorts'}" or "small folded bundle"). NEVER use loose words like "cloth" or "fabric" which cause the AI to render sprawling blankets or giant dresses!
+              * SINGLE ANCHOR LOCATION: Anchor it strictly to ONE single spot ${placementSpot}. ZERO cloth on the opposite side of the bed.
               * ZERO DUPLICATION / ZERO PILE: Absolutely ZERO duplicate pieces, ZERO cloth on both sides, ZERO messy laundry piles, and ZERO random mismatched colors.
-              * STRICT SEPARATION OF WORN VS REMOVED: If Character 1 is STILL WEARING her top or bottom, DO NOT describe or mention the worn garment when describing the bed/background! The bed surface must have ONLY the single removed piece.
+              * STRICT SEPARATION OF WORN VS REMOVED: If Character 1 is STILL WEARING ${agentPossessive} top or bottom, DO NOT describe or mention the worn garment when describing the bed/background! The surface must have ONLY the single removed piece.
               * ABSOLUTELY NEVER describe or depict the clothes from Reference Image 1 (Profile Pic)! Reference Image 1 is strictly for facial and biometric identity only. The discarded clothes MUST strictly come from ${papSlotUpper}.
-              * PRISTINE SURROUNDINGS: The remainder of the mattress, sheets, and pillows MUST be completely smooth, clean, and flat with zero stray fabrics.` 
+              * PRISTINE SURROUNDINGS: The remainder of the mattress, sheets, and furniture MUST be completely smooth, clean, and flat with zero stray fabrics.` 
            : `- FIRST PHOTO SESSION: This is the very first photo session. Character 1 has NOT changed clothes from any previous photo. DO NOT describe or include any discarded clothes, dropped garments, or messy laundry anywhere in the scene. The room must be clean and orderly with zero discarded clothes.`}
          ${outfitTransitionInstruction}
       3. Define the "NEW SCENE & POSE":
@@ -2678,10 +2783,11 @@ Retain the EXACT SAME LOCATION/SETTING with previous PAP (${analyzedRoom}). Char
       let text = raw.trim();
 
       const soloOrCoupleClause = isTogetherMode 
-        ? `Two distinct individuals posing together: Character 1 is female named ${agentName} (distinct feminine face and body), Character 2 is ${effectiveUserProfile?.name || 'User'} (${userTraitsDesc}). STRICT RULES: Two separate bodies, completely different faces, NO face swapping, NO cloned faces, NO head swap, exactly two heads, four arms, four legs total, correct joint connectivity, NO dislocated shoulders or limbs, NO conjoined torso.`
-        : (shouldInjectAnatomy ? "STRICTLY SOLO: Exactly ONE female person in frame. Single head, single body. NO second person, NO duplicate head, NO conjoined body." : "");
+        ? `Two distinct individuals posing together: Character 1 is ${agentGenderLower} named ${agentName} (distinct ${isAgentMale ? 'masculine' : 'feminine'} face and body), Character 2 is ${effectiveUserProfile?.name || 'User'} (${userTraitsDesc}). STRICT RULES: Two separate bodies, completely different faces, NO face swapping, NO cloned faces, NO head swap, exactly two heads, four arms, four legs total, correct joint connectivity, NO dislocated shoulders or limbs, NO conjoined torso.`
+        : (shouldInjectAnatomy ? `STRICTLY SOLO: Exactly ONE ${agentGenderLower} person in frame. Single head, single body. NO second person, NO duplicate head, NO conjoined body.` : "");
 
-      const extraClauses = [soloOrCoupleClause, anatomyClauseText, negativeClauseText].filter(Boolean).join(" ");
+      const undressClause = isEffectiveUndress ? UNDRESS_PROMPT : "";
+      const extraClauses = [undressClause, soloOrCoupleClause, anatomyClauseText, negativeClauseText].filter(Boolean).join(" ");
       return `Photorealistic cinematic portrait of ${agentName}, ${text}. ${extraClauses}`.trim();
     };
 
